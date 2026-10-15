@@ -130,9 +130,14 @@ func handlePlan(reg *registry.Registry, cfg config.Config) http.HandlerFunc {
 
 		plan := planForBackend(*askReq)
 		plan.TraceID = requestID(req)
+
+		start := time.Now()
 		result := planner.Execute(ctx, reg, plan)
-		respond(w, req, toResponse(*askReq, requestID(req), orchestratorRuleBased, result))
-		logEval(req, *askReq, result, orchestratorRuleBased, cfg.StoreLogTimeout)
+		elapsed := time.Since(start)
+
+		resp := toResponse(*askReq, requestID(req), orchestratorRuleBased, result)
+		respond(w, req, resp)
+		logEval(req, resp, elapsed, cfg.StoreLogTimeout)
 	}
 }
 
@@ -151,9 +156,13 @@ func handleAsk(reg *registry.Registry, cfg config.Config) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(req.Context(), cfg.RequestTimeout)
 		defer cancel()
 
+		start := time.Now()
 		result, used := runWithGroq(ctx, reg, *askReq, requestID(req), cfg.GroqAPIKey, cfg.GroqModel)
-		respond(w, req, toResponse(*askReq, requestID(req), used, result))
-		logEval(req, *askReq, result, used, cfg.StoreLogTimeout)
+		elapsed := time.Since(start)
+
+		resp := toResponse(*askReq, requestID(req), used, result)
+		respond(w, req, resp)
+		logEval(req, resp, elapsed, cfg.StoreLogTimeout)
 	}
 }
 
@@ -234,21 +243,37 @@ func respond(w http.ResponseWriter, _ *http.Request, resp api.GatewayResponse) {
 	writeJSON(w, status, resp)
 }
 
-func logEval(req *http.Request, askReq api.AskRequest, result planner.ExecutionResult, orchestratorName string, timeout time.Duration) {
-	// Score default float64 di ExecutionResult adalah 0. Pastikan hanya hasil
-	// evaluasi yang benar-benar mengirim skor (termasuk skor sah bernilai 0)
-	// yang disimpan, supaya evaluator yang dilewati tidak tercatat sebagai 0.
-	if _, ok := evalScore(evalData(result)); !ok {
-		return
+// logEval menyimpan satu request ke tabel gateway.
+//
+// Setiap request dicatat, bukan hanya yang dinilai: EvaluationStatus
+// membedakan completed / unavailable / skipped, dan Faithfulness *float64
+// membuat "tidak dinilai" tersimpan sebagai NULL, bukan 0. Membuang request
+// yang tidak dinilai akan mengisi tabel hanya dengan kasus sukses, dan itu
+// membuat tren faithfulness terlihat lebih baik dari kenyataannya.
+func logEval(req *http.Request, resp api.GatewayResponse, elapsed, timeout time.Duration) {
+	var score *float64
+	if resp.Evaluation != nil && resp.Evaluation.Score != nil {
+		score = resp.Evaluation.Score
+	}
+
+	var failureMode string
+	if resp.Evaluation != nil {
+		failureMode = resp.Evaluation.FailureMode
 	}
 
 	logEvalAsyncWithTimeout(req.Context(), store.EvalLog{
-		Query:             askReq.Query,
-		Answer:            result.Answer,
-		Faithfulness:      result.Score,
-		FailureMode:       store.ExtractFailureMode(evalData(result)),
-		RetrievalStrategy: "hybrid",
-		Orchestrator:      orchestratorName,
+		RequestID:        resp.RequestID,
+		Query:            resp.Query,
+		Answer:           resp.Answer,
+		Backend:          resp.Backend,
+		BackendModel:     resp.Model,
+		Orchestrator:     resp.Orchestrator,
+		Decision:         resp.Decision,
+		FailureType:      resp.FailureType,
+		EvaluationStatus: resp.EvaluationStatus,
+		Faithfulness:     score,
+		FailureMode:      failureMode,
+		DurationMs:       int(elapsed.Milliseconds()),
 	}, timeout, store.LogEval)
 }
 

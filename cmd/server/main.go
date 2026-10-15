@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/malikimayzar/mcp-gateway/internal/config"
-	"github.com/malikimayzar/mcp-gateway/internal/planner"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
 	"github.com/malikimayzar/mcp-gateway/internal/tools"
@@ -74,14 +73,4 @@ func logEvalAsyncWithTimeout(ctx context.Context, e store.EvalLog, timeout time.
 		defer cancel()
 		write(logCtx, e)
 	}()
-}
-
-// evalData ambil Data dari step evaluate_answer kalau ada
-func evalData(result planner.ExecutionResult) map[string]interface{} {
-	for _, step := range result.Steps {
-		if step.ToolName == "evaluate_answer" && step.Success {
-			return step.Data
-		}
-	}
-	return nil
 }

@@ -64,14 +64,20 @@ func TestLogEvalAsync_HasOwnDeadline(t *testing.T) {
 // Data yang diteruskan harus utuh — regression guard kalau refactor
 // call site lupa mengoper EvalLog.
 func TestLogEvalAsync_PassesEvalLogIntact(t *testing.T) {
+	score := 0.86
 	in := store.EvalLog{
-		Query:             "apa itu RAG?",
-		Answer:            "Retrieval Augmented Generation",
-		Faithfulness:      0.86,
-		FailureMode:       "none",
-		RetrievalStrategy: "hybrid",
-		Orchestrator:      "groq",
-		Retried:           true,
+		RequestID:        "req-1",
+		Query:            "apa itu RAG?",
+		Answer:           "Retrieval Augmented Generation",
+		Backend:          "arxiv",
+		BackendModel:     "openai/gpt-oss-20b",
+		Orchestrator:     "groq",
+		Decision:         "answer",
+		FailureType:      "none",
+		EvaluationStatus: "completed",
+		Faithfulness:     &score,
+		FailureMode:      "none",
+		DurationMs:       1234,
 	}
 
 	got := make(chan store.EvalLog, 1)

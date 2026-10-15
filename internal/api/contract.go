@@ -219,7 +219,6 @@ type GatewayResponse struct {
 
 	Query        string       `json:"query,omitempty"`
 	Orchestrator string       `json:"orchestrator,omitempty"`
-	Retried      bool         `json:"retried,omitempty"`
 	Steps        []StepResult `json:"steps,omitempty"`
 }
 
