@@ -1,4 +1,26 @@
-.PHONY: start stop status logs
+.PHONY: check build vet test lint fmt demo start stop status logs
+
+# --- Verification (run before every commit) ---
+build:
+	@go build ./...
+
+vet:
+	@go vet ./...
+
+test:
+	@go test -race -count=1 ./...
+
+lint:
+	@golangci-lint run --timeout=5m
+
+fmt:
+	@gofmt -l -w .
+
+check: build vet test lint
+	@echo "OK: build + vet + test -race + lint"
+
+demo:
+	@bash scripts/demo.sh
 
 start:
 	@echo "Starting all services..."
