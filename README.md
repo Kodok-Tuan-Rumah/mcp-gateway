@@ -42,30 +42,46 @@ evidence. Gateway melewati evaluasi untuk abstensi atau context kosong.
 
 | Service | Stack | Port | Role |
 |---|---|---|---|
-| **mcp-gateway** | Go + chi | 8090 | Orchestration, tool registry, planner, executor |
-| **arxiv-research-assistant** | Go + Python + Qdrant | 8080/8001 | ArXiv search, paper ingestion, RAG |
-| **rag-research** | Python + Qdrant + BM25 | 8000 | Research RAG API (`/generate`; gateway adapter integration pending) |
+| **mcp-gateway** | Go + chi | 8090 | Orchestration, routing, adapter dispatch |
+| **arxiv-research-assistant** | Go + Python + Qdrant | 8080 | ArXiv answer backend (`/query`) — the only active backend |
+| **rag-research** | Python + Qdrant + BM25 | 8000 | Research RAG (`/generate`) — **not integrated**; the gateway calls no route here yet |
 | **llm-eval-framework** | Python + Ollama | 8002 | Faithfulness evaluation, failure mode analysis |
-| **PostgreSQL** | postgres:16 | 5432 | Query logs, eval scores, paper metadata |
-| **Qdrant** | qdrant/qdrant | 6333 | Vector store for dense retrieval |
-| **Grafana** | grafana/grafana | 3000 | Observability dashboard |
-| **Prometheus** | prom/prometheus | 9090 | Metrics collection |
+| **PostgreSQL** | postgres:16 | 5432 | Query logs and eval scores (schema owned by `arxiv-research-assistant`) |
+| **Qdrant** | qdrant/qdrant | 6333 | Vector store, used by the backend services |
+| **Grafana / Prometheus** | — | 3000 / 9090 | Observability, owned by `arxiv-research-assistant` |
+
+This repository does not start these dependencies. Each has its own deployment
+path in its own repository.
 
 ---
 
 ## Quick Start
 
-**Full-stack startup is not ready yet.** This repository does not currently include a Compose file that connects all four repositories, and the gateway's RAG adapter does not match `rag-research`'s current API. See [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) for the source-level status and [`PROJECT_GOALS.md`](PROJECT_GOALS.md) for the integration gates.
+```bash
+make check   # build + vet + test -race + lint
+make demo    # start the gateway and exercise the endpoints
+```
+
+`make demo` needs no downstream services. It starts the real gateway, runs the
+routing and failure cases, and shuts down. This is the fastest way to confirm
+behaviour: it shows that an unavailable backend produces `502` with an empty
+answer rather than a plausible-looking one.
+
+To run it yourself:
 
 ```bash
-# From the mcp-gateway repository: start only the gateway process.
 go run ./cmd/server
-
-# In another terminal, check that the process is listening.
+# another terminal
 curl -s http://localhost:8090/health
 ```
 
-This process check does not verify downstream services or a working `/ask` flow. End-to-end setup will be documented after the integration gates are met.
+**Full-stack startup is not ready yet.** This repository does not include a
+Compose file connecting the four repositories, and the RAG adapter does not
+match `rag-research`'s current API. See [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md)
+and [`PROJECT_GOALS.md`](PROJECT_GOALS.md) for the integration gates.
+
+A healthy `/health` means the process is alive. It does not mean any downstream
+service is reachable — that check does not exist yet.
 
 ---
 
@@ -167,25 +183,31 @@ FROM query_logs ORDER BY created_at DESC LIMIT 10;
 
 ```
 mcp-gateway/
-├── cmd/server/main.go          — entry point, chi router, /ask /plan /tool
+├── cmd/server/
+│   ├── main.go                 — bootstrap: config, store, registry, listen
+│   ├── router.go               — HTTP handler + request/response helpers
+│   ├── plan.go                 — per-backend plan construction
+│   └── respond.go              — execution result → public contract
 ├── internal/
-│   ├── api/                    — public request/response contract
+│   ├── api/                    — public request/response contract + golden files
+│   ├── config/                 — startup configuration from environment
 │   ├── registry/               — tool registration and dispatch
 │   ├── tools/
+│   │   ├── arxiv_contract.go   — typed ArXiv response + evidence mapping
+│   │   ├── evaluate_contract.go— typed evaluator response
 │   │   ├── search_arxiv.go     — ArXiv adapter (active answer backend)
 │   │   ├── retrieve_chunks.go  — legacy adapter; downstream contract unavailable
 │   │   └── evaluate_answer.go  — evaluator adapter
-│   ├── planner/
-│   │   ├── planner.go          — plan types and legacy planner helper
-│   │   └── executor.go         — sequential execution and legacy retry helper
-│   ├── orchestrator/
-│   │   └── groq.go             — optional Groq plan generation
-│   └── store/
-│       └── postgres.go         — asynchronous evaluation persistence
+│   ├── planner/                — plan types and sequential execution
+│   ├── orchestrator/           — optional Groq plan generation
+│   └── store/                  — asynchronous evaluation persistence
 ├── scripts/
-│   └── benchmark.py            — latency + faithfulness benchmark
-├── docs/tool-contracts/        — JSON specs per tool
-└── Makefile                    — start/stop/status/logs
+│   ├── demo.sh                 — start gateway + exercise endpoints (make demo)
+│   └── benchmark.py            — latency benchmark (needs downstream services)
+├── docs/
+│   ├── api-contract.md         — normative API specification
+│   └── tool-contracts/         — per-adapter JSON contracts
+└── Makefile                    — check / demo / start / stop / status
 ```
 
 ---
@@ -199,26 +221,57 @@ The current plan attempts evaluation when answer and source context are availabl
 Groq is only used for *deciding which tools to call* — not for generating the answer. This keeps the system cost-efficient and the answers grounded in retrieved context.
 
 **3. Fallback chain**  
-`Groq plan → rule-based plan → individual tool`. The system degrades gracefully at every layer.
+`Groq plan → deterministic plan`. If Groq is unavailable, the key is missing, or
+the returned plan contains no usable answer step, the gateway falls back to the
+deterministic per-backend plan. There is no per-tool fallback below that:
+a backend failure is reported, not papered over.
 
-**4. Polyglot by necessity, not trend**  
+**4. One backend per request**  
+`backendTools` maps each backend to the tools it may call, so a plan can only
+contain steps from one list. This is what prevents an ArXiv answer from being
+scored against chunks retrieved from a different backend.
+
+**5. Polyglot by necessity, not trend**  
 Go handles routing, concurrency, and low-latency HTTP. Python handles ML — embeddings, retrieval, evaluation. Each language does what it's best at.
 
 ---
 
 ## Environment Variables
 
-```bash
-# Optional; without a key /ask uses the deterministic plan.
-GROQ_API_KEY=gsk_...          # Groq API key for plan selection
+All variables are optional; unset values fall back to local-development
+defaults. See [`.env.example`](.env.example) for the annotated list — the two
+files are kept in sync by a test, so neither can drift silently.
 
-# Optional (defaults shown)
-POSTGRES_DSN=host=localhost port=5432 user=arxiv password=arxiv_secret dbname=arxiv_db sslmode=disable
-ARXIV_SERVICE_URL=http://localhost:8080  # base URL; gateway appends /query
-EVAL_SERVICE_URL=http://localhost:8002   # base URL; gateway appends /evaluate
+```bash
+# Orchestration
+GROQ_API_KEY=gsk_...              # without a key, /ask uses the deterministic plan
+
+# Persistence
+POSTGRES_DSN=host=localhost ...  # empty disables eval logging; answering is unaffected
+
+# Service addresses (gateway appends /query, /evaluate)
+ARXIV_SERVICE_URL=http://localhost:8080
+EVAL_SERVICE_URL=http://localhost:8002
+RAG_SERVICE_URL=http://arxiv-rag-service:8003
+
+# Timeouts and response bounds
+GATEWAY_LISTEN_ADDRESS=:8090
+GATEWAY_REQUEST_TIMEOUT=620s
+STORE_LOG_TIMEOUT=5s
+ARXIV_TIMEOUT=600s
+EVAL_TIMEOUT=120s
+RAG_TIMEOUT=10s
+ARXIV_MAX_RESPONSE_BYTES=4194304
+EVAL_MAX_RESPONSE_BYTES=1048576
+RAG_MAX_RESPONSE_BYTES=4194304
 ```
 
-`RAG_SERVICE_URL` is not consumed by the active answer routes. The `retrieve_chunks` tool remains registered, but its downstream API contract is not implemented.
+Invalid durations or sizes fail startup with an error naming the variable,
+rather than silently falling back.
+
+`RAG_SERVICE_URL` is not consumed by the active answer routes. The
+`retrieve_chunks` tool remains registered for visibility, but its downstream
+API contract is not implemented.
 
 ---
 
