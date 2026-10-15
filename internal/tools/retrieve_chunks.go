@@ -7,14 +7,31 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+	"strings"
 
+	"github.com/malikimayzar/mcp-gateway/internal/config"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 )
 
-const retrieveChunksURL = "http://arxiv-rag-service:8003/retrieve"
+// NewRetrieveChunks returns the legacy retrieval adapter bound to startup
+// configuration. It remains available only to the low-level /tool endpoint.
+func NewRetrieveChunks(service config.ServiceConfig) registry.HandlerFunc {
+	return func(ctx context.Context, req registry.ToolRequest) registry.ToolResponse {
+		return retrieveChunks(ctx, req, service)
+	}
+}
 
+// RetrieveChunks is retained for direct callers. The production registry uses
+// NewRetrieveChunks so configuration is read once during startup.
 func RetrieveChunks(ctx context.Context, req registry.ToolRequest) registry.ToolResponse {
+	cfg, err := config.Load()
+	if err != nil {
+		return errorResponse(req, fmt.Sprintf("invalid runtime configuration: %v", err))
+	}
+	return retrieveChunks(ctx, req, cfg.RAG)
+}
+
+func retrieveChunks(ctx context.Context, req registry.ToolRequest, service config.ServiceConfig) registry.ToolResponse {
 	query, ok := req.Params["query"].(string)
 	if !ok || query == "" {
 		return errorResponse(req, "param query is required")
@@ -36,10 +53,11 @@ func RetrieveChunks(ctx context.Context, req registry.ToolRequest) registry.Tool
 		"method": method,
 	})
 
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, service.Timeout)
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", retrieveChunksURL, bytes.NewBuffer(body))
+	endpoint := strings.TrimRight(service.BaseURL, "/") + "/retrieve"
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(body))
 	if err != nil {
 		return errorResponse(req, fmt.Sprintf("failed to build request: %v", err))
 	}
@@ -51,7 +69,13 @@ func RetrieveChunks(ctx context.Context, req registry.ToolRequest) registry.Tool
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, service.MaxResponseBytes+1))
+	if err != nil {
+		return errorResponse(req, fmt.Sprintf("failed to read retrieve_chunks response: %v", err))
+	}
+	if int64(len(respBody)) > service.MaxResponseBytes {
+		return errorResponse(req, fmt.Sprintf("retrieve_chunks response exceeds %d bytes", service.MaxResponseBytes))
+	}
 	if resp.StatusCode != 200 {
 		return errorResponse(req, fmt.Sprintf("retrieve_chunks returned %d: %s", resp.StatusCode, string(respBody)))
 	}

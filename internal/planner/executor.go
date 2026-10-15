@@ -2,24 +2,33 @@ package planner
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
+	"github.com/malikimayzar/mcp-gateway/internal/api"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 )
 
+// ExecutionResult adalah record internal eksekusi plan.
+//
+// BUKAN bentuk JSON publik. Respons publik adalah api.GatewayResponse
+// (internal/api/contract.go) — lihat docs/api-contract.md. Field di sini masih
+// PascalCase; jawaban dan metadata backend dipetakan ke kontrak publik melalui
+// api.GatewayResponse sebelum dikirim.
 type ExecutionResult struct {
-	Query   string
-	Steps   []StepResult
-	Answer  string
-	Context string
-	Score   float64
-	Retried bool
+	Query    string
+	Steps    []StepResult
+	Answer   string
+	Context  string
+	Evidence []api.Evidence
+	Model    string
+	Latency  *api.StageLatency
+	Score    float64
 }
 
 type StepResult struct {
 	ToolName string
 	Success  bool
+	Skipped  bool
 	Error    string
 	Data     map[string]interface{}
 }
@@ -33,7 +42,7 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 		req := registry.ToolRequest{
 			ToolName: step.ToolName,
 			Params:   step.Params,
-			TraceID:  fmt.Sprintf("plan-%s", plan.Query[:min(10, len(plan.Query))]),
+			TraceID:  plan.TraceID,
 		}
 
 		// inject context dari step sebelumnya ke evaluate_answer
@@ -42,9 +51,23 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 				result.Steps = append(result.Steps, StepResult{
 					ToolName: step.ToolName,
 					Success:  false,
+					Skipped:  true,
 					Error:    "skipped: no answer or context available",
 				})
 				continue
+			}
+			switch {
+			case strings.TrimSpace(answer) == api.ArxivAbstainText:
+				result.Steps = append(result.Steps, StepResult{
+					ToolName: step.ToolName,
+					Success:  false,
+					Skipped:  true,
+					Error:    "skipped: backend abstained",
+				})
+				continue
+			}
+			if req.Params == nil {
+				req.Params = make(map[string]interface{})
 			}
 			req.Params["answer"] = answer
 			req.Params["context"] = contextStr
@@ -66,37 +89,29 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 
 		// extract answer dan context dari hasil tool
 		if step.ToolName == "search_arxiv" {
-			if a, ok := resp.Data["answer"].(string); ok {
-				answer = a
-			}
-			if sources, ok := resp.Data["sources"].([]interface{}); ok {
-				var parts []string
-				for _, s := range sources {
-					if sm, ok := s.(map[string]interface{}); ok {
-						if t, ok := sm["text"].(string); ok {
-							parts = append(parts, t)
-						}
-					}
+			if typed, ok := resp.TypedResult.(interface {
+				AnswerText() string
+				ModelName() string
+				Evidence() []api.Evidence
+				Latency() *api.StageLatency
+			}); ok {
+				answer = typed.AnswerText()
+				result.Model = typed.ModelName()
+				result.Evidence = typed.Evidence()
+				result.Latency = typed.Latency()
+			} else {
+				// Keep compatibility with registry handlers that still return the
+				// wire-shaped Data map, while the production adapter passes its
+				// typed response through TypedResult.
+				if a, ok := resp.Data["answer"].(string); ok {
+					answer = a
 				}
-				contextStr = strings.Join(parts, " ")
-			}
-		}
-
-		if step.ToolName == "retrieve_chunks" {
-			if results, ok := resp.Data["results"].([]interface{}); ok {
-				var parts []string
-				for _, r := range results {
-					if rm, ok := r.(map[string]interface{}); ok {
-						if t, ok := rm["text"].(string); ok {
-							parts = append(parts, t)
-						}
-					}
+				if model, ok := resp.Data["model"].(string); ok {
+					result.Model = model
 				}
-				contextStr = strings.Join(parts, " ")
-				if answer == "" {
-					answer = contextStr
-				}
+				result.Evidence = evidenceFromToolData(resp.Data)
 			}
+			contextStr = evidenceContext(result.Evidence)
 		}
 
 		if step.ToolName == "evaluate_answer" {
@@ -111,44 +126,39 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 	return result
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+func evidenceContext(evidence []api.Evidence) string {
+	parts := make([]string, 0, len(evidence))
+	for _, item := range evidence {
+		if item.Text != "" {
+			parts = append(parts, item.Text)
+		}
 	}
-	return b
+	return strings.Join(parts, " ")
 }
 
-func ExecuteWithRetry(ctx context.Context, reg *registry.Registry, query string, topK int) ExecutionResult {
-	// First attempt: hybrid
-	plan := MakePlan(query, topK)
-	result := Execute(ctx, reg, plan)
-
-	// Kalau score rendah, retry dengan bm25
-	if result.Score < 0.6 && result.Score > 0 {
-		retryPlan := Plan{
-			Query: query,
-			Steps: []Step{
-				{
-					ToolName: "retrieve_chunks",
-					Params: map[string]interface{}{
-						"query":  query,
-						"top_k":  float64(topK),
-						"method": "bm25",
-					},
-				},
-				{
-					ToolName: "evaluate_answer",
-					Params:   map[string]interface{}{},
-				},
-			},
-		}
-		retryResult := Execute(ctx, reg, retryPlan)
-		if retryResult.Score > result.Score {
-			retryResult.Query = query
-			retryResult.Retried = true
-			return retryResult
-		}
+func evidenceFromToolData(data map[string]interface{}) []api.Evidence {
+	sources, ok := data["sources"].([]interface{})
+	if !ok {
+		return nil
 	}
-
-	return result
+	evidence := make([]api.Evidence, 0, len(sources))
+	for _, source := range sources {
+		fields, ok := source.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		text, ok := fields["text"].(string)
+		if !ok {
+			continue
+		}
+		item := api.Evidence{Text: text}
+		if sourceID, ok := fields["arxiv_id"].(string); ok {
+			item.SourceID = sourceID
+		}
+		if score, ok := fields["score"].(float64); ok {
+			item.Score = &score
+		}
+		evidence = append(evidence, item)
+	}
+	return evidence
 }

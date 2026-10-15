@@ -1,16 +1,17 @@
+// Package main adalah entrypoint gateway.
+//
+// Seluruh wiring HTTP ada di router.go, pemetaan ke kontrak publik di
+// respond.go, dan penyusunan plan di plan.go — supaya semuanya bisa diuji
+// tanpa menjalankan proses server.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
-
-	"github.com/malikimayzar/mcp-gateway/internal/orchestrator"
+	"github.com/malikimayzar/mcp-gateway/internal/config"
 	"github.com/malikimayzar/mcp-gateway/internal/planner"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
@@ -18,176 +19,61 @@ import (
 )
 
 func main() {
-	store.Init()
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("invalid runtime configuration: %v", err)
+	}
+
+	store.Init(cfg.PostgresDSN)
 	defer store.Close()
 
-	reg := registry.New()
-	reg.Register("search_arxiv", tools.SearchArxiv)
-	reg.Register("retrieve_chunks", tools.RetrieveChunks)
-	reg.Register("evaluate_answer", tools.EvaluateAnswer)
+	reg := newRegistry(cfg)
 
-	r := chi.NewRouter()
-	r.Use(middleware.Logger)
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.RequestID)
-
-	// GET /health — list registered tools
-	r.Get("/health", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
-			"status": "ok",
-			"tools":  reg.List(),
-		})
-	})
-
-	// POST /tool — direct tool call
-	r.Post("/tool", func(w http.ResponseWriter, req *http.Request) {
-		var toolReq registry.ToolRequest
-		if err := json.NewDecoder(req.Body).Decode(&toolReq); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
-		if toolReq.TraceID == "" {
-			toolReq.TraceID = middleware.GetReqID(req.Context())
-		}
-
-		ctx, cancel := context.WithTimeout(req.Context(), 620*time.Second)
-		defer cancel()
-
-		resp := reg.Execute(ctx, toolReq)
-		w.Header().Set("Content-Type", "application/json")
-		if !resp.Success {
-			w.WriteHeader(http.StatusBadRequest)
-		}
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-
-	// POST /plan — rule-based planner + eval loop
-	r.Post("/plan", func(w http.ResponseWriter, req *http.Request) {
-		var body struct {
-			Query string `json:"query"`
-			TopK  int    `json:"top_k"`
-		}
-		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
-		if body.Query == "" {
-			http.Error(w, "query is required", http.StatusBadRequest)
-			return
-		}
-		if body.TopK == 0 {
-			body.TopK = 5
-		}
-
-		ctx, cancel := context.WithTimeout(req.Context(), 620*time.Second)
-		defer cancel()
-
-		result := planner.ExecuteWithRetry(ctx, reg, body.Query, body.TopK)
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(result)
-	})
-
-	// POST /ask — Groq LLM orchestrator, fallback ke rule-based
-	r.Post("/ask", func(w http.ResponseWriter, req *http.Request) {
-		var body struct {
-			Query string `json:"query"`
-			TopK  int    `json:"top_k"`
-		}
-		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-			http.Error(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
-		if body.Query == "" {
-			http.Error(w, "query is required", http.StatusBadRequest)
-			return
-		}
-		if body.TopK == 0 {
-			body.TopK = 5
-		}
-
-		ctx, cancel := context.WithTimeout(req.Context(), 620*time.Second)
-		defer cancel()
-
-		// Coba Groq dulu
-		orcPlan, err := orchestrator.GeneratePlan(ctx, body.Query)
-		if err != nil {
-			// Fallback ke rule-based planner
-			log.Printf("[ask] Groq failed (%v), falling back to rule-based planner", err)
-			result := planner.ExecuteWithRetry(ctx, reg, body.Query, body.TopK)
-
-			// Tambah field orchestrator = "rule-based"
-			go store.LogEval(ctx, store.EvalLog{
-				Query:             body.Query,
-				Answer:            result.Answer,
-				Faithfulness:      result.Score,
-				FailureMode:       store.ExtractFailureMode(evalData(result)),
-				RetrievalStrategy: "rule-based",
-				Orchestrator:      "rule-based",
-				Retried:           result.Retried,
-			})
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(withOrchestrator(result, "rule-based"))
-			return
-		}
-
-		log.Printf("[ask] using Groq plan (%d steps)", len(orcPlan.Steps))
-
-		// Build execPlan dari Groq plan
-		execPlan := planner.Plan{Query: body.Query}
-		for _, step := range orcPlan.Steps {
-			if step.Params == nil {
-				step.Params = map[string]interface{}{}
-			}
-			if _, ok := step.Params["query"]; !ok {
-				step.Params["query"] = body.Query
-			}
-			if _, ok := step.Params["top_k"]; !ok {
-				step.Params["top_k"] = float64(body.TopK)
-			}
-			execPlan.Steps = append(execPlan.Steps, planner.Step{
-				ToolName: step.ToolName,
-				Params:   step.Params,
-			})
-		}
-
-		result := planner.Execute(ctx, reg, execPlan)
-
-		// Tambah field orchestrator = "groq"
-		go store.LogEval(ctx, store.EvalLog{
-			Query:             body.Query,
-			Answer:            result.Answer,
-			Faithfulness:      result.Score,
-			FailureMode:       store.ExtractFailureMode(evalData(result)),
-			RetrievalStrategy: "hybrid",
-			Orchestrator:      "groq",
-			Retried:           result.Retried,
-		})
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(withOrchestrator(result, "groq"))
-	})
-
-	log.Println("MCP Gateway starting on :8090")
-	log.Fatal(http.ListenAndServe(":8090", r))
+	log.Printf("MCP Gateway starting on %s", cfg.ListenAddress)
+	if err := http.ListenAndServe(cfg.ListenAddress, newRouterWithConfig(reg, cfg)); err != nil {
+		log.Fatal(err)
+	}
 }
 
-// withOrchestrator menyuntikkan field "orchestrator" ke result map
-// tanpa mengubah struct planner.Result yang sudah ada.
-func withOrchestrator(result interface{}, name string) map[string]interface{} {
-	// Marshal result ke JSON dulu
-	b, err := json.Marshal(result)
-	if err != nil {
-		return map[string]interface{}{"orchestrator": name, "error": "marshal failed"}
-	}
+// newRegistry mendaftarkan tool yang tersedia.
+//
+// retrieve_chunks sengaja tetap terdaftar supaya endpoint /tool bisa
+// dipanggil dan errornya terlihat apa adanya, tapi tool ini TIDAK dipakai
+// jalur jawaban mana pun pada v1 — lihat backendTools di plan.go.
+func newRegistry(cfg config.Config) *registry.Registry {
+	reg := registry.New()
+	reg.Register("search_arxiv", tools.NewSearchArxiv(cfg.Arxiv))
+	reg.Register("retrieve_chunks", tools.NewRetrieveChunks(cfg.RAG))
+	reg.Register("evaluate_answer", tools.NewEvaluateAnswer(cfg.Evaluator))
+	return reg
+}
 
-	// Unmarshal ke map supaya bisa tambah field
-	var m map[string]interface{}
-	if err := json.Unmarshal(b, &m); err != nil {
-		return map[string]interface{}{"orchestrator": name, "error": "unmarshal failed"}
-	}
+// evalWriter adalah fungsi penulisan log evaluasi (store.LogEval), di-inject
+// supaya logEvalAsync bisa diuji tanpa PostgreSQL.
+type evalWriter func(ctx context.Context, e store.EvalLog)
 
-	m["orchestrator"] = name
-	return m
+// logEvalAsync menulis hasil evaluasi ke PostgreSQL di luar jalur serving.
+//
+// Context permintaan asli sudah dibatalkan begitu handler selesai (defer cancel),
+// sehingga goroutine yang memakai context itu akan menerima "context canceled"
+// dan INSERT-nya gagal. Supaya penulisan tetap terjadi, context di-"detach"
+// dari pembatalan parent, lalu diberi batas waktu sendiri.
+//
+// Catatan: context harus dibuat DI DALAM goroutine. Kalau dibuat di luar,
+// cancel()-nya akan ikut ter-defer oleh handler dan membatalkan ulang
+// penulisan yang sedang berjalan.
+func logEvalAsync(ctx context.Context, e store.EvalLog, write evalWriter) {
+	logEvalAsyncWithTimeout(ctx, e, config.Default().StoreLogTimeout, write)
+}
+
+// logEvalAsyncWithTimeout is the production variant; its timeout comes from
+// startup configuration rather than a package constant.
+func logEvalAsyncWithTimeout(ctx context.Context, e store.EvalLog, timeout time.Duration, write evalWriter) {
+	go func() {
+		logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+		defer cancel()
+		write(logCtx, e)
+	}()
 }
 
 // evalData ambil Data dari step evaluate_answer kalau ada

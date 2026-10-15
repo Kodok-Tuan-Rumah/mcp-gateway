@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -22,17 +21,18 @@ type Plan struct {
 	Answer string     `json:"answer"`
 }
 
-var systemPrompt = `You are an AI research assistant orchestrator. Given a user query, decide which tools to call and in what order.
+var systemPrompt = `You are an AI research assistant orchestrator. Given a user query, select the available ArXiv answer tool.
 
 Available tools:
-1. search_arxiv — search and query ArXiv papers using RAG. Use for research questions about ML/AI papers.
-2. retrieve_chunks — retrieve relevant text chunks from local document index. Use for quick factual lookups.
-3. evaluate_answer — evaluate faithfulness of an answer against context. Always use this as the last step.
+1. search_arxiv — search ArXiv papers and return an answer with its sources.
+2. evaluate_answer — evaluate the answer against the context returned by search_arxiv. If selected, it must be the last step.
+
+Do not select retrieve_chunks or any other tool. The gateway currently serves only the ArXiv backend on this route.
 
 Respond ONLY with valid JSON (no markdown, no code blocks) in this exact format:
 {
   "steps": [
-    {"tool_name": "retrieve_chunks", "params": {"query": "...", "top_k": 5, "method": "hybrid"}, "reason": "..."},
+    {"tool_name": "search_arxiv", "params": {"query": "...", "top_k": 5}, "reason": "..."},
     {"tool_name": "evaluate_answer", "params": {}, "reason": "evaluate faithfulness"}
   ],
   "answer": ""
@@ -50,8 +50,11 @@ func extractJSON(raw string) string {
 	return raw
 }
 
-func GeneratePlan(ctx context.Context, query string) (Plan, error) {
-	apiKey := os.Getenv("GROQ_API_KEY")
+// GeneratePlan meminta rencana tool dari Groq.
+//
+// apiKey diberikan pemanggil supaya orchestrator tidak membaca environment
+// variable sendiri dan supaya jalur fallback bisa diuji tanpa kunci sungguhan.
+func GeneratePlan(ctx context.Context, query, apiKey string) (Plan, error) {
 	if apiKey == "" {
 		return Plan{}, fmt.Errorf("GROQ_API_KEY not set")
 	}
@@ -75,6 +78,9 @@ func GeneratePlan(ctx context.Context, query string) (Plan, error) {
 		return Plan{}, fmt.Errorf("groq call failed: %w", err)
 	}
 
+	if len(resp.Choices) == 0 {
+		return Plan{}, fmt.Errorf("groq returned no completion choices")
+	}
 	raw := resp.Choices[0].Message.Content
 	log.Printf("[groq] raw response: %s", raw)
 

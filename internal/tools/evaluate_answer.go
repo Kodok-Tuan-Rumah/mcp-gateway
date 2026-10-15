@@ -7,14 +7,32 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+	"strings"
 
+	"github.com/malikimayzar/mcp-gateway/internal/config"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 )
 
-const evaluateAnswerURL = "http://arxiv-eval-service:8002/evaluate"
+const maxEvaluateResponseBytes = config.DefaultEvaluatorMaxResponseSize
 
+// NewEvaluateAnswer returns an adapter bound to startup configuration.
+func NewEvaluateAnswer(service config.ServiceConfig) registry.HandlerFunc {
+	return func(ctx context.Context, req registry.ToolRequest) registry.ToolResponse {
+		return evaluateAnswer(ctx, req, service)
+	}
+}
+
+// EvaluateAnswer is retained for direct callers. The production registry uses
+// NewEvaluateAnswer so configuration is read once during startup.
 func EvaluateAnswer(ctx context.Context, req registry.ToolRequest) registry.ToolResponse {
+	cfg, err := config.Load()
+	if err != nil {
+		return errorResponse(req, fmt.Sprintf("invalid runtime configuration: %v", err))
+	}
+	return evaluateAnswer(ctx, req, cfg.Evaluator)
+}
+
+func evaluateAnswer(ctx context.Context, req registry.ToolRequest, service config.ServiceConfig) registry.ToolResponse {
 	answer, ok := req.Params["answer"].(string)
 	if !ok || answer == "" {
 		return errorResponse(req, "param answer is required")
@@ -30,18 +48,20 @@ func EvaluateAnswer(ctx context.Context, req registry.ToolRequest) registry.Tool
 		return errorResponse(req, "param question is required")
 	}
 
-	body, _ := json.Marshal(map[string]interface{}{
-		"answer":   answer,
-		"context":  contextStr,
-		"question": question,
+	body, err := json.Marshal(EvaluateAnswerRequest{
+		Answer: answer, Context: contextStr, Question: question,
 	})
+	if err != nil {
+		return errorResponse(req, fmt.Sprintf("failed to encode evaluator request: %v", err))
+	}
 
-	// Pakai context baru supaya tidak terpengaruh deadline parent
-	evalCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	// Beri evaluator batas waktu maksimum; deadline/cancel parent tetap berlaku.
+	evalCtx, cancel := context.WithTimeout(ctx, service.Timeout)
 	ctx = evalCtx
 	defer cancel()
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", evaluateAnswerURL, bytes.NewBuffer(body))
+	endpoint := strings.TrimRight(service.BaseURL, "/") + "/evaluate"
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(body))
 	if err != nil {
 		return errorResponse(req, fmt.Sprintf("failed to build request: %v", err))
 	}
@@ -53,20 +73,29 @@ func EvaluateAnswer(ctx context.Context, req registry.ToolRequest) registry.Tool
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, service.MaxResponseBytes+1))
+	if err != nil {
+		return errorResponse(req, fmt.Sprintf("failed to read evaluate_answer response: %v", err))
+	}
+	if int64(len(respBody)) > service.MaxResponseBytes {
+		return errorResponse(req, fmt.Sprintf("evaluate_answer response exceeds %d bytes", service.MaxResponseBytes))
+	}
 	if resp.StatusCode != 200 {
 		return errorResponse(req, fmt.Sprintf("evaluate_answer returned %d: %s", resp.StatusCode, string(respBody)))
 	}
 
-	var result map[string]interface{}
+	if err := validateEvaluateAnswerResponse(respBody); err != nil {
+		return errorResponse(req, fmt.Sprintf("malformed evaluate_answer response: %v", err))
+	}
+	var result EvaluateAnswerResponse
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return errorResponse(req, fmt.Sprintf("failed to parse response: %v", err))
+		return errorResponse(req, fmt.Sprintf("malformed evaluate_answer response: %v", err))
 	}
 
 	return registry.ToolResponse{
 		ToolName: req.ToolName,
 		TraceID:  req.TraceID,
 		Success:  true,
-		Data:     result,
+		Data:     result.ToolData(),
 	}
 }

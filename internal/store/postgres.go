@@ -4,18 +4,24 @@ import (
 	"context"
 	"database/sql"
 	"log"
-	"os"
 	"time"
 
 	_ "github.com/lib/pq" // postgres driver
 )
 
+// DefaultPostgresDSN adalah nilai fallback untuk pengembangan lokal.
+const DefaultPostgresDSN = "host=localhost port=5432 user=arxiv password=arxiv_secret dbname=arxiv_db sslmode=disable"
+
 var db *sql.DB
 
-func Init() {
-	dsn := os.Getenv("POSTGRES_DSN")
+// Init membuka koneksi PostgreSQL.
+//
+// dsn diberikan pemanggil (diambil dari config saat startup) supaya store tidak
+// membaca environment variable sendiri dan supaya nilai yang dipakai bisa
+// diuji. Kalau dsn kosong, konfigurasi default lokal dipakai.
+func Init(dsn string) {
 	if dsn == "" {
-		dsn = "host=localhost port=5432 user=arxiv password=arxiv_secret dbname=arxiv_db sslmode=disable"
+		dsn = DefaultPostgresDSN
 	}
 
 	var err error
