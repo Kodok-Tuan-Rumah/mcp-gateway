@@ -595,6 +595,66 @@ func TestPlan_EvaluatorWithoutUsableScore(t *testing.T) {
 	}
 }
 
+// Default diterapkan saat field tidak dikirim, dan request tetap valid.
+func TestPlan_AppliesDefaults(t *testing.T) {
+	ts := newTestServer(newTestRegistry())
+	defer ts.Close()
+
+	body := decodeJSON(t, postJSON(t, ts, "/plan", map[string]interface{}{
+		"query": "apa itu RAG?", // backend dan top_k tidak dikirim
+	}))
+
+	if body["backend"] != "arxiv" {
+		t.Errorf("backend default harus arxiv, got %v", body["backend"])
+	}
+	// top_k=5 diteruskan ke search_arxiv; stub menerimanya tanpa error.
+	if body["decision"] != "answer" {
+		t.Errorf("request tanpa backend/top_k harus tetap diproses, got decision=%v", body["decision"])
+	}
+}
+
+// Hanya search_arxiv boleh dipanggil lewat /plan. RetrieveChunks dan
+// EvaluateAnswer tetap bisa dipanggil langsung lewat /tool.
+func TestTool_RetrieveChunksDirectly(t *testing.T) {
+	ts := newTestServer(newTestRegistry())
+	defer ts.Close()
+
+	resp := postJSON(t, ts, "/tool", map[string]interface{}{
+		"tool_name": toolRetrieveChunks,
+		"params":    map[string]interface{}{"query": "attention mechanism", "top_k": 3},
+	})
+	body := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	}
+	if body["success"] != true {
+		t.Errorf("expected success=true, got %v", body["success"])
+	}
+}
+
+func TestTool_EvaluateAnswerDirectly(t *testing.T) {
+	ts := newTestServer(newTestRegistry())
+	defer ts.Close()
+
+	resp := postJSON(t, ts, "/tool", map[string]interface{}{
+		"tool_name": toolEvaluateAnswer,
+		"params": map[string]interface{}{
+			"answer":   "RAG mengurangi halusinasi dengan grounding pada konteks.",
+			"context":  "chunk A chunk B",
+			"question": "Bagaimana RAG mengurangi halusinasi?",
+		},
+	})
+	body := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	}
+	if body["success"] != true {
+		t.Errorf("expected success=true, got %v", body["success"])
+	}
+}
+
 // ──────────────────────────────── /ask ────────────────────────────────
 
 // Tanpa GROQ_API_KEY, /ask harus jatuh ke plan deterministik dan tetap
