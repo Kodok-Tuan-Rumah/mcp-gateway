@@ -1,21 +1,78 @@
 {
   "name": "search_arxiv",
-  "description": "Search and ingest ArXiv papers, then query them",
-  "endpoint": "http://localhost:8080",
-  "timeout_seconds": 30,
+  "status": "active",
+  "description": "Menjawab pertanyaan lewat pipeline RAG ArXiv. Satu-satunya backend jawaban yang aktif di v1.",
+  "gateway_implementation": "internal/tools/search_arxiv.go",
+
+  "downstream": {
+    "service": "arxiv-research-assistant/go-backend",
+    "endpoint": "$ARXIV_SERVICE_URL/query (default: http://localhost:8080/query)",
+    "method": "POST",
+    "verified_against_source": "internal/api/query.go (QueryRequest/QueryResponse), internal/client/ml_client.go (Source)",
+    "note": "Base URL dapat dikonfigurasi melalui ARXIV_SERVICE_URL; path /query ditambahkan adapter."
+  },
+
   "input": {
-    "query": "string (required)",
-    "top_k": "int (default: 5)"
+    "query": {
+      "type": "string",
+      "required": true,
+      "constraints": "1..1000 karakter (divalidasi gateway sebelum diteruskan)",
+      "notes": "Backend mengembalikan 400 bila kosong."
+    },
+    "top_k": {
+      "type": "int",
+      "required": false,
+      "default": 5,
+      "range": "1..20 (divalidasi gateway)",
+      "notes": "Backend juga punya default 5 bila 0 atau tidak dikirim."
+    }
   },
+
   "output": {
-    "answer": "string",
-    "sources": "array of chunks",
-    "retrieval_ms": "int",
-    "generation_ms": "int"
+    "answer": {
+      "type": "string",
+      "required": true,
+      "description": "Jawaban yang dihasilkan backend.",
+      "abstention_sentinel": {
+        "value": "Not found in context.",
+        "produced_by": "python-ml ollama_client saat tidak menemukan isi relevan",
+        "handling": "Gateway memetakan ke decision=abstain, failure_type=insufficient_context (cmd/server/respond.go). Nilai ini adalah sentinel string, bukan field status eksplisit — backend tidak mengirimnya sebagai field tersendiri."
+      }
+    },
+    "sources": {
+      "type": "array",
+      "required": true,
+      "item": {
+        "text": "string — isi chunk sumber",
+        "score": "number — skor similaritas",
+        "arxiv_id": "string — ID paper ArXiv"
+      },
+      "mapping": "Tipe/pemetaan didefinisikan di internal/tools/arxiv_contract.go: text → api.Evidence.text, arxiv_id → source_id, score → score. Evidence diteruskan ke GatewayResponse dan teks evidence yang sama menjadi context evaluator.",
+      "known_gap": "Tidak ada chunk_id maupun uri di schema Source go-backend, jadi provenance hanya bisa turun sampai tingkat arxiv_id."
+    },
+    "retrieval_ms": { "type": "int", "mapping": "→ api.StageLatency.retrieval" },
+    "generation_ms": { "type": "int", "mapping": "→ api.StageLatency.generation" },
+    "model": { "type": "string", "default": "phi3:mini", "mapping": "diteruskan apa adanya; tidak diisi gateway jika kosong" },
+    "log_id": {
+      "type": "string",
+      "declared": true,
+      "populated": false,
+      "note": "Dideklarasikan di QueryResponse tapi tidak pernah diisi handler. Jangan diasumsikan selalu ada."
+    }
   },
+
   "errors": {
-    "500": "ml service unavailable",
-    "404": "no chunks found",
-    "400": "empty query"
-  }
+    "400": "query kosong — divalidasi gateway sebelum panggilan",
+    "500": "ML service tidak terjangkau atau gagal (circuit breaker di go-backend)",
+    "timeout": "Adapter dibatasi 600 detik dan tetap mengikuti deadline parent; dipetakan ke failure_type backend_timeout",
+    "malformed_response": "JSON invalid, tipe field tidak cocok, atau field wajib hilang; dipetakan ke failure_type malformed_response",
+    "response_limit": "Body downstream dibatasi 4 MiB",
+    "non_2xx": "Status downstream non-2xx menjadi tool error dan response publik decision=error"
+  },
+
+  "notes": [
+    "go-backend adalah proxy murni: retrieval dan generation terjadi di python-ml, bukan di Go.",
+    "Backend tidak mengirim field status/keputusan; abstensi hanya lewat sentinel string yang dipusatkan sebagai api.ArxivAbstainText.",
+    "Backend tidak melaporkan latency total; gateway tidak menghitung atau mengarang nilai total."
+  ]
 }

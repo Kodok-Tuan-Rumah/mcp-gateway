@@ -130,17 +130,24 @@ Grafana panel "Groq vs Rule-based" menunjukkan persentase rule-based naik drasti
 
 ### Mitigasi yang Diimplementasikan
 
+> **Catatan historis:** cuplikan berikut berasal dari implementasi lama dan
+> sudah tidak menjadi jalur aktif. Router saat ini memakai `runWithGroq` lalu
+> `planner.Execute` atas `planForBackend`; fallback deterministik tidak memakai
+> retrieval chunks dan tidak menjalankan retry.
+
 ```go
 // main.go — fallback logic
 orcPlan, err := orchestrator.GeneratePlan(ctx, body.Query)
 if err != nil {
     log.Printf("[ask] Groq failed (%v), falling back to rule-based planner", err)
-    result := planner.ExecuteWithRetry(ctx, reg, body.Query, body.TopK)
+    fallback := planForBackend(askReq)
+    result := planner.Execute(ctx, reg, fallback)
     // ... return result dengan orchestrator="rule-based"
 }
 ```
 
-Fallback ke rule-based planner memastikan sistem tetap melayani request meski Groq down.
+Fallback deterministik saat ini tetap melayani request meski Groq down. Retry
+dinonaktifkan sampai kebijakan percobaan ulang dirancang.
 
 ### Lesson Learned
 
@@ -182,20 +189,44 @@ Grafana logs: `db query error: failed to connect to server`. Panel "Total Querie
 ### Mitigasi yang Diimplementasikan
 
 ```go
-// main.go — async logging dengan goroutine
-go store.LogEval(ctx, store.EvalLog{
+// cmd/server/main.go — async logging dengan context yang di-detach
+logEvalAsync(ctx, store.EvalLog{
     Query:        body.Query,
     Answer:       result.Answer,
     Faithfulness: result.Score,
     // ...
-})
+}, store.LogEval)
+
+func logEvalAsync(ctx context.Context, e store.EvalLog, write evalWriter) {
+	go func() {
+		logCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), storeLogTimeout)
+		defer cancel()
+		write(logCtx, e)
+	}()
+}
 ```
 
 Store write dijadikan async via goroutine — request handler tidak blocked oleh DB write. Answer tetap dikembalikan ke user meski logging gagal.
 
+### Koreksi (2026-10-15)
+
+Implementasi pertama memakai `go store.LogEval(ctx, ...)` dengan context permintaan
+langsung. Itu **tidak benar**: `defer cancel()` di handler membatalkan context begitu
+handler selesai, sehingga INSERT gagal dengan `context canceled` dan hampir semua
+record hilang. Gejalanya justru sama dengan "DB down" yang skenario ini gambarkan,
+padahal penyebabnya sama sekali berbeda — dan itu membuat masalahnya sulit didiagnosis.
+
+Perbaikannya adalah `context.WithoutCancel` (regression test ada di
+`cmd/server/logeval_test.go`). Status nyata sekarang: penulisan log sudah benar, tapi
+buffering terhadap DB yang sedang tidak stabil belum ada.
+
 ### Lesson Learned
 
-Observability path (logging) tidak boleh blocking untuk serving path (response). Ke depan, buffer queue (channel) perlu ditambahkan agar log tidak hilang saat DB temporary unavailable.
+Observability path (logging) tidak boleh blocking untuk serving path (response). **Dan
+"async" saja tidak cukup** — context yang dipakai goroutine background tidak boleh
+terikat pada context request, karena akan membatalkan dirinya sendiri saat handler
+selesai. Ke depan, buffer queue (channel) perlu ditambahkan agar log tidak hilang saat
+DB sedang tidak stabil.
 
 ---
 

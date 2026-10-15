@@ -1,22 +1,75 @@
 {
   "name": "evaluate_answer",
-  "description": "Evaluate faithfulness of an answer against context",
-  "endpoint": "http://localhost:8002",
-  "timeout_seconds": 60,
+  "status": "active",
+  "description": "Mengukur dukungan bukti terhadap sebuah jawaban. Dipakai sebagai langkah terakhir pada jalur jawaban.",
+  "gateway_implementation": "internal/tools/evaluate_answer.go",
+
+  "downstream": {
+    "service": "llm-eval-framework",
+    "endpoint": "$EVAL_SERVICE_URL/evaluate (default: http://localhost:8002/evaluate)",
+    "method": "POST",
+    "verified_against_source": "api.py (EvalRequest/EvalResponse)",
+    "note": "Base URL dapat dikonfigurasi melalui EVAL_SERVICE_URL; path /evaluate ditambahkan adapter."
+  },
+
   "input": {
-    "answer": "string (required)",
-    "context": "string (required)",
-    "question": "string (required)"
+    "answer": {
+      "type": "string",
+      "required": true,
+      "constraints": "1..1000 karakter (divalidasi gateway)",
+      "notes": "Divalidasi gateway lewat api.AskRequest.MaxQueryLen."
+    },
+    "context": {
+      "type": "string",
+      "required": true,
+      "notes": "Executor menyusun context dari teks evidence terstruktur yang sama dan berurutan seperti yang dikembalikan di evidence[]."
+    },
+    "question": {
+      "type": "string",
+      "required": false,
+      "notes": "Wajib di schema backend (tidak punya default). Gateway selalu mengirimkannya; field tidak tervalidasi oleh backend."
+    }
   },
+
   "output": {
-    "faithfulness_score": "float 0.0-1.0",
-    "failure_mode": "string: none | unsupported_claims | insufficient_context",
-    "has_failure": "bool",
-    "supported_claims": "int",
-    "total_claims": "int"
+    "faithfulness_score": { "type": "float", "range": "0.0-1.0" },
+    "failure_mode": {
+      "type": "string",
+      "values": ["none", "unsupported_claims", "insufficient_context"],
+      "notes": "Diturunkan: starts 'none'; 'unsupported_claims' bila has_failure; di-override jadi 'insufficient_context' bila respons abstensi."
+    },
+    "has_failure": { "type": "bool" },
+    "supported_claims": { "type": "int" },
+    "total_claims": { "type": "int" },
+    "evaluator_version": { "type": "string", "required": false, "mapping": "→ evaluation.version bila API evaluator mengirimkannya" }
   },
+
+  "gateway_semantics": {
+    "evaluation_status": {
+      "completed": "faithfulness_score terbaca dan dipakai sebagai evaluation.score",
+      "unavailable": "step gagal, atau sukses tapi skor tidak terbaca. Jawaban backend tetap dikembalikan; key 'score' sengaja tidak ada.",
+      "skipped": "Tidak ada jawaban/konteks yang bisa dinilai, atau langkah tidak dijalankan."
+    },
+    "score_is_never_invented": "applyEvaluation hanya mengisi score bila data berisi float finite dalam rentang 0.0-1.0. Skor 0 sah; tidak ada default 0.",
+    "version_is_never_invented": "evaluation.version hanya diisi dari evaluator_version yang dikembalikan API; versi service tidak ditebak dari konfigurasi gateway.",
+    "failure_type_not_overwritten": "Kegagalan evaluator tidak mengubah decision maupun failure_type — status jawaban terpisah dari status evaluasi."
+  },
+
   "errors": {
-    "500": "evaluation failed",
-    "400": "empty answer or context"
-  }
+    "400": "answer atau context kosong (api.py raising HTTPException)",
+    "500": "exception saat evaluasi (termasuk Ollama embeddings tidak terjangkau)",
+    "note": "Baik 400 dan 500 akan berakhir sebagai evaluation_status=unavailable di gateway — status itu, bukan kode HTTP, yang dipakai client."
+  },
+
+  "known_gaps": [
+    "Ollama memakai OLLAMA_HOST dengan default http://localhost:11434 — di container itu bukan host Ollama yang benar (Phase 4).",
+    "Threshold di config.yaml adalah 0.68; README llm-eval-framework menulis 0.75. Dokumentasi itu tidak sinkron."
+  ],
+
+  "notes": [
+    "Faithfulness mengukur dukungan bukti, bukan kebenaran faktual.",
+    "Gateway melewati evaluasi untuk abstensi atau konteks kosong. Jawaban pendek dinilai dengan exact match konservatif terhadap context. API evaluator menolak answer/context kosong.",
+    "API evaluator tidak menerima ground_truth. Short-answer path memakai exact match konservatif terhadap context bila ground_truth tidak tersedia.",
+    "evaluator_version dikembalikan API dari versi evaluator yang benar-benar menjalankan request."
+  ]
 }
