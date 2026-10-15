@@ -27,6 +27,11 @@ const (
 	DefaultRAGServiceURL            = "http://arxiv-rag-service:8003"
 	DefaultRAGTimeout               = 10 * time.Second
 	DefaultRAGMaxResponseBytes      = 4 << 20
+
+	// DefaultGroqModel adalah model orkestrator. Groq mencabut model dari
+	// daftar akses secara berkala; nama yang hilang membuat /ask selalu
+	// jatuh ke plan deterministik tanpa error yang terlihat.
+	DefaultGroqModel = "openai/gpt-oss-20b"
 )
 
 // ServiceConfig is the runtime configuration shared by a downstream HTTP
@@ -44,6 +49,7 @@ type Config struct {
 	StoreLogTimeout time.Duration
 	PostgresDSN     string
 	GroqAPIKey      string
+	GroqModel       string
 	Arxiv           ServiceConfig
 	Evaluator       ServiceConfig
 	RAG             ServiceConfig
@@ -58,6 +64,7 @@ func Default() Config {
 		RequestTimeout:  DefaultRequestTimeout,
 		StoreLogTimeout: DefaultStoreLogTimeout,
 		PostgresDSN:     DefaultPostgresDSN,
+		GroqModel:       DefaultGroqModel,
 		Arxiv: ServiceConfig{
 			BaseURL:          DefaultArxivServiceURL,
 			Timeout:          DefaultArxivTimeout,
@@ -91,6 +98,7 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	cfg.ListenAddress = stringValue(lookup, "GATEWAY_LISTEN_ADDRESS", cfg.ListenAddress)
 	cfg.PostgresDSN = stringValue(lookup, "POSTGRES_DSN", cfg.PostgresDSN)
 	cfg.GroqAPIKey = stringValue(lookup, "GROQ_API_KEY", "")
+	cfg.GroqModel = stringValue(lookup, "GROQ_MODEL", cfg.GroqModel)
 	cfg.Arxiv.BaseURL = stringValue(lookup, "ARXIV_SERVICE_URL", cfg.Arxiv.BaseURL)
 	cfg.Evaluator.BaseURL = stringValue(lookup, "EVAL_SERVICE_URL", cfg.Evaluator.BaseURL)
 	cfg.RAG.BaseURL = stringValue(lookup, "RAG_SERVICE_URL", cfg.RAG.BaseURL)

@@ -96,6 +96,7 @@ func TestReadme_DocumentsOnlyRealEnvVars(t *testing.T) {
 
 	known := map[string]struct{}{
 		"GROQ_API_KEY":             {},
+		"GROQ_MODEL":               {},
 		"POSTGRES_DSN":             {},
 		"ARXIV_SERVICE_URL":        {},
 		"EVAL_SERVICE_URL":         {},

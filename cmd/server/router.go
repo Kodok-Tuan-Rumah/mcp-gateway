@@ -151,7 +151,7 @@ func handleAsk(reg *registry.Registry, cfg config.Config) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(req.Context(), cfg.RequestTimeout)
 		defer cancel()
 
-		result, used := runWithGroq(ctx, reg, *askReq, requestID(req), cfg.GroqAPIKey)
+		result, used := runWithGroq(ctx, reg, *askReq, requestID(req), cfg.GroqAPIKey, cfg.GroqModel)
 		respond(w, req, toResponse(*askReq, requestID(req), used, result))
 		logEval(req, *askReq, result, used, cfg.StoreLogTimeout)
 	}
@@ -159,8 +159,8 @@ func handleAsk(reg *registry.Registry, cfg config.Config) http.HandlerFunc {
 
 // runWithGroq menjalankan plan dari LLM, dengan fallback ke plan deterministik
 // bila Groq gagal atau menghasilkan plan yang tidak bisa dipakai.
-func runWithGroq(ctx context.Context, reg *registry.Registry, askReq api.AskRequest, traceID, groqAPIKey string) (planner.ExecutionResult, string) {
-	orcPlan, err := orchestrator.GeneratePlan(ctx, askReq.Query, groqAPIKey)
+func runWithGroq(ctx context.Context, reg *registry.Registry, askReq api.AskRequest, traceID, groqAPIKey, groqModel string) (planner.ExecutionResult, string) {
+	orcPlan, err := orchestrator.GeneratePlan(ctx, askReq.Query, groqAPIKey, groqModel)
 	if err != nil {
 		log.Printf("[ask] Groq gagal (%v), fallback ke plan deterministik", err)
 		plan := planForBackend(askReq)

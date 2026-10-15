@@ -18,6 +18,7 @@ func TestEnvExample_ListsEverySupportedVariable(t *testing.T) {
 		"GATEWAY_LISTEN_ADDRESS":   {},
 		"POSTGRES_DSN":             {},
 		"GROQ_API_KEY":             {},
+		"GROQ_MODEL":               {},
 		"ARXIV_SERVICE_URL":        {},
 		"EVAL_SERVICE_URL":         {},
 		"RAG_SERVICE_URL":          {},

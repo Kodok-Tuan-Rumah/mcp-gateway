@@ -52,21 +52,30 @@ func extractJSON(raw string) string {
 
 // GeneratePlan meminta rencana tool dari Groq.
 //
-// apiKey diberikan pemanggil supaya orchestrator tidak membaca environment
-// variable sendiri dan supaya jalur fallback bisa diuji tanpa kunci sungguhan.
-func GeneratePlan(ctx context.Context, query, apiKey string) (Plan, error) {
+// apiKey dan model diberikan pemanggil supaya orchestrator tidak membaca
+// environment variable sendiri dan supaya jalur fallback bisa diuji tanpa
+// kunci sungguhan.
+//
+// Model sengaja dikonfigurasi, bukan ditulis di sini: Groq mencabut model dari
+// daftar akses secara berkala, dan nama yang hilang membuat setiap panggilan
+// gagal dengan model_not_found, dan kegagalan itu hilang di balik fallback
+// yang terlihat normal.
+func GeneratePlan(ctx context.Context, query, apiKey, model string) (Plan, error) {
 	if apiKey == "" {
 		return Plan{}, fmt.Errorf("GROQ_API_KEY not set")
+	}
+	if model == "" {
+		return Plan{}, fmt.Errorf("GROQ_MODEL not set")
 	}
 
 	config := openai.DefaultConfig(apiKey)
 	config.BaseURL = "https://api.groq.com/openai/v1"
 	client := openai.NewClientWithConfig(config)
 
-	log.Printf("[groq] calling Groq LLM for query: %q", query)
+	log.Printf("[groq] calling Groq model %s for query: %q", model, query)
 
 	resp, err := client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model: "llama-3.3-70b-versatile",
+		Model: model,
 		Messages: []openai.ChatCompletionMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: query},
@@ -75,7 +84,7 @@ func GeneratePlan(ctx context.Context, query, apiKey string) (Plan, error) {
 	})
 	if err != nil {
 		log.Printf("[groq] API call failed: %v", err)
-		return Plan{}, fmt.Errorf("groq call failed: %w", err)
+		return Plan{}, fmt.Errorf("groq call failed with model %s: %w", model, err)
 	}
 
 	if len(resp.Choices) == 0 {
