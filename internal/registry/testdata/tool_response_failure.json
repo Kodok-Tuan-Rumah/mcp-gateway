@@ -1,0 +1,6 @@
+{
+  "tool_name": "nonexistent",
+  "trace_id": "trace-2",
+  "success": false,
+  "error": "tool \"nonexistent\" not found in registry"
+}

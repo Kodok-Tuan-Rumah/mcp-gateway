@@ -1,0 +1,8 @@
+{
+  "tool_name": "retrieve_chunks",
+  "trace_id": "trace-1",
+  "params": {
+    "query": "transformer",
+    "top_k": 5
+  }
+}

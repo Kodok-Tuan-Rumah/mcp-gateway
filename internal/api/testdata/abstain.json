@@ -1,0 +1,9 @@
+{
+  "request_id": "req-abc124",
+  "answer": "Not found in context.",
+  "backend": "arxiv",
+  "decision": "abstain",
+  "failure_type": "insufficient_context",
+  "evaluation_status": "skipped",
+  "query": "hasil GPT-5 terbaru?"
+}

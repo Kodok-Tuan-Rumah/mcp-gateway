@@ -1,0 +1,6 @@
+{
+  "request_id": "req-abc126",
+  "failure_type": "backend_not_available",
+  "message": "backend research_rag is not available in v1: no adapter implemented",
+  "field": "backend"
+}

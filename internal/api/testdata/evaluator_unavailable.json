@@ -1,0 +1,9 @@
+{
+  "request_id": "req-abc125",
+  "answer": "Jawaban tetap valid.",
+  "backend": "arxiv",
+  "decision": "answer",
+  "failure_type": "none",
+  "evaluation_status": "unavailable",
+  "query": "apa itu BM25?"
+}

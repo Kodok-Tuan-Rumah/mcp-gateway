@@ -1,0 +1,33 @@
+{
+  "request_id": "req-abc123",
+  "answer": "RAG menggabungkan retrieval dengan generation.",
+  "evidence": [
+    {
+      "text": "Retrieval augmented generation...",
+      "source_id": "2101.00001",
+      "score": 0.82
+    },
+    {
+      "text": "Chunk kedua...",
+      "chunk_id": "chunk-7"
+    }
+  ],
+  "backend": "arxiv",
+  "model": "phi3:mini",
+  "latency_ms": {
+    "retrieval": 120,
+    "generation": 3400,
+    "total": 3520
+  },
+  "decision": "answer",
+  "failure_type": "none",
+  "evaluation_status": "completed",
+  "evaluation": {
+    "score": 0.86,
+    "failure_mode": "none",
+    "supported_claims": 3,
+    "total_claims": 3
+  },
+  "query": "apa itu RAG?",
+  "orchestrator": "groq"
+}
