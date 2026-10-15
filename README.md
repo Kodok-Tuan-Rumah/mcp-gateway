@@ -10,7 +10,7 @@ Client → HTTP Gateway :8090 → selected backend → answer + evidence
                                       └→ optional evaluator → status/score
 
 Intended workspace services:
-  ArXiv Assistant :8080  |  RAG Research :8000  |  Eval API :8002
+  ArXiv Assistant :8080  |  RAG Research :8003  |  Eval API :8002
 ```
 
 ## What This Is
@@ -31,10 +31,10 @@ evidence. Gateway melewati evaluasi untuk abstensi atau context kosong.
 |---|---|---|
 | External API | HTTP/JSON (`/ask`, `/plan`, `/tool`) | Current implementation; MCP protocol interoperability is not implemented yet |
 | Gateway language | Go | Low latency routing, goroutine-based async logging, strong typing |
-| ML services | Python | Ecosystem — HuggingFace, FAISS, rank-bm25, sentence-transformers |
-| Orchestrator | Groq (llama-3.3-70b) | Fast inference for planning, fallback to rule-based if unavailable |
+| ML services | Python | Ecosystem — HuggingFace, sentence-transformers, rank-bm25 |
+| Orchestrator | Groq (default model: openai/gpt-oss-20b) | Fast inference for planning; model configurable via `GROQ_MODEL`, fallback to rule-based if unavailable |
 | Evaluation | Ollama (nomic-embed-text) | Local, no LLM judge needed, faithfulness via cosine similarity |
-| Storage | PostgreSQL | Eval scores persisted for trend analysis and Grafana dashboards |
+| Storage | PostgreSQL | Eval scores persisted for trend analysis |
 
 ---
 
@@ -44,11 +44,11 @@ evidence. Gateway melewati evaluasi untuk abstensi atau context kosong.
 |---|---|---|---|
 | **mcp-gateway** | Go + chi | 8090 | Orchestration, routing, adapter dispatch |
 | **arxiv-research-assistant** | Go + Python + Qdrant | 8080 | ArXiv answer backend (`/query`) — the only active backend |
-| **rag-research** | Python + Qdrant + BM25 | 8000 | Research RAG (`/generate`) — **not integrated**; the gateway calls no route here yet |
+| **rag-research** | Python + Qdrant + BM25 | 8003 | Research RAG (`/generate`) — **not integrated**; the gateway calls no route here yet |
 | **llm-eval-framework** | Python + Ollama | 8002 | Faithfulness evaluation, failure mode analysis |
-| **PostgreSQL** | postgres:16 | 5432 | Query logs and eval scores (schema owned by `arxiv-research-assistant`) |
+| **PostgreSQL** | postgres:16-alpine | 5432 | Gateway eval log in its own `gateway_query_logs` table (database owned by `arxiv-research-assistant`) |
 | **Qdrant** | qdrant/qdrant | 6333 | Vector store, used by the backend services |
-| **Grafana / Prometheus** | — | 3000 / 9090 | Observability, owned by `arxiv-research-assistant` |
+| **Grafana / Prometheus** | — | 3000 / 9090 | Monitoring, owned by `arxiv-research-assistant`; Grafana has no provisioned dashboards yet |
 
 This repository does not start these dependencies. Each has its own deployment
 path in its own repository.
@@ -171,10 +171,10 @@ Query → search_arxiv → answer + source context → evaluate_answer (when pos
                                     persist only valid scores asynchronously
 ```
 
-Evaluation results are persisted to `query_logs` table:
+Evaluation results are persisted to the gateway's own `gateway_query_logs` table:
 ```sql
-SELECT query, faithfulness, model, retrieval_strategy, created_at
-FROM query_logs ORDER BY created_at DESC LIMIT 10;
+SELECT request_id, query, decision, evaluation_status, faithfulness, backend_model, duration_ms, created_at
+FROM gateway_query_logs ORDER BY created_at DESC LIMIT 10;
 ```
 
 ---
@@ -247,7 +247,7 @@ files are kept in sync by a test, so neither can drift silently.
 GROQ_API_KEY=gsk_...              # without a key, /ask uses the deterministic plan
 
 # Persistence
-POSTGRES_DSN=host=localhost ...  # empty disables eval logging; answering is unaffected
+POSTGRES_DSN=host=localhost ...  # unset or empty → local default DSN; if the DB is unreachable, logging is skipped (answering unaffected)
 
 # Service addresses (gateway appends /query, /evaluate)
 ARXIV_SERVICE_URL=http://localhost:8080
@@ -280,8 +280,8 @@ API contract is not implemented.
 | Repo | Description |
 |---|---|
 | [arxiv-research-assistant](https://github.com/malikimayzar/arxiv-research-assistant) | Go+Python RAG system, ArXiv ingestion, circuit breaker, observability |
-| [llm-eval-framework](https://github.com/malikimayzar/llm-eval-framework) | Faithfulness evaluation without LLM judge, 105 unit tests |
-| [rag-research](https://github.com/malikimayzar/rag-research) | BM25+FAISS hybrid retrieval, ablation study, zero hallucination benchmark |
+| [llm-eval-framework](https://github.com/malikimayzar/llm-eval-framework) | Faithfulness evaluation without LLM judge |
+| [rag-research](https://github.com/malikimayzar/rag-research) | Hybrid retrieval (Qdrant + BM25), confidence engine, retrieval-only evaluation evidence |
 
 ---
 
