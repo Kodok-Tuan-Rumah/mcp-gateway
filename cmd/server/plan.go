@@ -9,6 +9,7 @@ import (
 // Nama tool yang terdaftar di registry.
 const (
 	toolSearchArxiv    = "search_arxiv"
+	toolResearchRAG    = "research_rag"
 	toolRetrieveChunks = "retrieve_chunks"
 	toolEvaluateAnswer = "evaluate_answer"
 )
@@ -23,7 +24,8 @@ const (
 // masih menembak endpoint yang belum ada di rag-research, dan memakainya lewat
 // jalur jawaban akan mencampur bukti antar backend.
 var backendTools = map[string][]string{
-	api.BackendArxiv: {toolSearchArxiv, toolEvaluateAnswer},
+	api.BackendArxiv:       {toolSearchArxiv, toolEvaluateAnswer},
+	api.BackendResearchRAG: {toolResearchRAG, toolEvaluateAnswer},
 }
 
 // toolsForBackend mengembalikan daftar tool yang diizinkan, atau nil kalau
@@ -44,25 +46,45 @@ func toolAllowed(backend, tool string) bool {
 
 // planForBackend menyusun plan deterministik: satu langkah menjawab, lalu
 // evaluasi.
-//
-// Plan deterministik ini hanya memakai adapter ArXiv yang menjadi backend
-// jawaban aktif. Adapter retrieve_chunks lama tidak menghasilkan jawaban.
 func planForBackend(req api.AskRequest) planner.Plan {
-	return planner.Plan{
-		Query: req.Query,
-		Steps: []planner.Step{
-			{
-				ToolName: toolSearchArxiv,
-				Params: map[string]interface{}{
-					"query": req.Query,
-					"top_k": float64(req.TopK),
+	switch req.Backend {
+	case api.BackendArxiv:
+		return planner.Plan{
+			Query: req.Query,
+			Steps: []planner.Step{
+				{
+					ToolName: toolSearchArxiv,
+					Params: map[string]interface{}{
+						"query": req.Query,
+						"top_k": float64(req.TopK),
+					},
+				},
+				{
+					ToolName: toolEvaluateAnswer,
+					Params:   map[string]interface{}{},
 				},
 			},
-			{
-				ToolName: toolEvaluateAnswer,
-				Params:   map[string]interface{}{},
+		}
+	case api.BackendResearchRAG:
+		return planner.Plan{
+			Query: req.Query,
+			Steps: []planner.Step{
+				{
+					ToolName: toolResearchRAG,
+					Params: map[string]interface{}{
+						"query":        req.Query,
+						"top_k":        float64(req.TopK),
+						"use_reranker": false,
+					},
+				},
+				{
+					ToolName: toolEvaluateAnswer,
+					Params:   map[string]interface{}{},
+				},
 			},
-		},
+		}
+	default:
+		return planner.Plan{}
 	}
 }
 

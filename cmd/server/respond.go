@@ -40,10 +40,10 @@ func toResponse(req api.AskRequest, requestID, orchestratorName string, result p
 // applyDecision menentukan decision dan failure_type berdasarkan apa yang
 // benar-benar terjadi selama eksekusi.
 func applyDecision(resp *api.GatewayResponse, result planner.ExecutionResult) {
-	answerStep, found := findStep(result.Steps, toolSearchArxiv)
+	answerStep := findAnswerStep(result.Steps, resp.Backend)
 
 	switch {
-	case !found:
+	case answerStep == nil:
 		// Langkah menjawab tidak ada sama sekali — tidak terjadi apa-apa.
 		resp.Decision = api.DecisionError
 		resp.FailureType = api.FailureBackendError
@@ -69,6 +69,33 @@ func applyDecision(resp *api.GatewayResponse, result planner.ExecutionResult) {
 	default:
 		resp.Decision = api.DecisionAnswer
 		resp.FailureType = api.FailureNone
+	}
+}
+
+// findAnswerStep menemukan langkah yang menghasilkan jawaban untuk backend
+// tertentu. Setiap backend punya tool jawabannya sendiri (search_arxiv untuk
+// arxiv, research_rag untuk research_rag), jadi kita harus mencari tool yang
+// benar bukan selalu search_arxiv.
+func findAnswerStep(steps []planner.StepResult, backend string) *planner.StepResult {
+	answerTool := answerToolForBackend(backend)
+	for i := range steps {
+		if steps[i].ToolName == answerTool {
+			return &steps[i]
+		}
+	}
+	return nil
+}
+
+// answerToolForBackend mengembalikan nama tool yang menghasilkan jawaban untuk
+// backend tertentu.
+func answerToolForBackend(backend string) string {
+	switch backend {
+	case api.BackendArxiv:
+		return toolSearchArxiv
+	case api.BackendResearchRAG:
+		return toolResearchRAG
+	default:
+		return ""
 	}
 }
 

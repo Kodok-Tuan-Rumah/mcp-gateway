@@ -278,7 +278,7 @@ func TestAskRequest_Validate(t *testing.T) {
 		{"top_k 0", AskRequest{Backend: BackendArxiv, Query: "apa itu RAG?", TopK: 0}, true, FailureInvalidRequest, "top_k"},
 		{"top_k negatif", AskRequest{Backend: BackendArxiv, Query: "apa itu RAG?", TopK: -1}, true, FailureInvalidRequest, "top_k"},
 		{"top_k melebihi max", AskRequest{Backend: BackendArxiv, Query: "apa itu RAG?", TopK: MaxTopK + 1}, true, FailureInvalidRequest, "top_k"},
-		{"research_rag ditolak", AskRequest{Backend: BackendResearchRAG, Query: "apa itu RAG?", TopK: 5}, true, FailureBackendNotAvailable, "backend"},
+		{"research_rag diterima", AskRequest{Backend: BackendResearchRAG, Query: "apa itu RAG?", TopK: 5}, false, "", ""},
 		{"backend ngawur", AskRequest{Backend: "bukan_backend", Query: "apa itu RAG?", TopK: 5}, true, FailureInvalidRequest, "backend"},
 	}
 

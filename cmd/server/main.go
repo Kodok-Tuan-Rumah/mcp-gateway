@@ -42,6 +42,7 @@ func main() {
 func newRegistry(cfg config.Config) *registry.Registry {
 	reg := registry.New()
 	reg.Register("search_arxiv", tools.NewSearchArxiv(cfg.Arxiv))
+	reg.Register("research_rag", tools.NewResearchRAG(cfg.RAG))
 	reg.Register("retrieve_chunks", tools.NewRetrieveChunks(cfg.RAG))
 	reg.Register("evaluate_answer", tools.NewEvaluateAnswer(cfg.Evaluator))
 	return reg

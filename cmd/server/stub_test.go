@@ -13,6 +13,7 @@ import (
 // Bentuk data stub sengaja mengikuti schema backend yang nyata:
 //
 //	search_arxiv    → answer + sources[].text/score/arxiv_id  (arxiv-research-assistant)
+//	research_rag    → answer + retrieved_chunks[].text/score   (rag-research)
 //	evaluate_answer → faithfulness_score + failure_mode       (llm-eval-framework)
 //
 // Stub lama memakai key "chunks" dan "faithfulness", sedangkan executor membaca
@@ -35,6 +36,27 @@ func newTestRegistry() *registry.Registry {
 				"model":         "phi3:mini",
 				"retrieval_ms":  120,
 				"generation_ms": 3400,
+			},
+		}
+	})
+
+	reg.Register(toolResearchRAG, func(_ context.Context, req registry.ToolRequest) registry.ToolResponse {
+		return registry.ToolResponse{
+			ToolName: req.ToolName,
+			TraceID:  req.TraceID,
+			Success:  true,
+			Data: map[string]interface{}{
+				"answer": "RAG adalah sistem yang menggabungkan retrieval dengan generation.",
+				"retrieved_chunks": []interface{}{
+					map[string]interface{}{"chunk_id": "c1", "doc_id": "d1", "text": "chunk A", "score": 0.82},
+					map[string]interface{}{"chunk_id": "c2", "doc_id": "d2", "text": "chunk B", "score": 0.70},
+				},
+				"model":                "phi3:mini",
+				"confidence":           0.85,
+				"decision":             "GENERATE",
+				"latency_retrieval_ms": 120,
+				"latency_generation_ms": 3400,
+				"latency_total_ms":     3520,
 			},
 		}
 	})

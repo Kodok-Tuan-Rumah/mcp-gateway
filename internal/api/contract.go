@@ -73,8 +73,8 @@ const (
 // AskRequest adalah body POST /ask dan POST /plan.
 //
 // Backend opsional: kalau kosong akan diisi BackendArxiv oleh Normalize().
-// research_rag dikenali sebagai nilai yang sah, tapi belum bisa dipakai di v1
-// (belum ada adapter) — Validate() menolaknya dengan FailureBackendNotAvailable.
+// research_rag sekarang tersedia sebagai backend alternatif yang dirutekan
+// ke adapter rag-research via POST /generate.
 type AskRequest struct {
 	Backend string `json:"backend"`
 	Query   string `json:"query"`
@@ -122,13 +122,7 @@ func (r *AskRequest) Validate() error {
 	case BackendArxiv:
 		return nil
 	case BackendResearchRAG:
-		// Nilai sah, tapi adapter-nya belum ada. Ditolak eksplisit supaya
-		// tidak pernah terlihat seperti request yang berhasil dijawab.
-		return &ValidationError{
-			Field:       "backend",
-			Message:     "backend " + BackendResearchRAG + " is not available in v1: no adapter implemented",
-			FailureType: FailureBackendNotAvailable,
-		}
+		return nil
 	default:
 		return &ValidationError{
 			Field:       "backend",

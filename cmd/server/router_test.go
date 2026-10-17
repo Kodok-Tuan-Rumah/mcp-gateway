@@ -24,8 +24,8 @@ func TestHealth(t *testing.T) {
 		t.Errorf("expected status=ok, got %v", body["status"])
 	}
 	tools, ok := body["tools"].([]interface{})
-	if !ok || len(tools) != 3 {
-		t.Fatalf("expected 3 tools, got %v", body["tools"])
+	if !ok || len(tools) != 4 {
+		t.Fatalf("expected 4 tools, got %v", body["tools"])
 	}
 }
 
@@ -207,7 +207,7 @@ func TestTool_RejectsOversizedBody(t *testing.T) {
 
 // ──────────────────────── routing / validasi input ────────────────────────
 
-func TestPlan_RejectsResearchRAG(t *testing.T) {
+func TestPlan_AcceptsResearchRAG(t *testing.T) {
 	ts := newTestServer(newTestRegistry())
 	defer ts.Close()
 
@@ -217,22 +217,18 @@ func TestPlan_RejectsResearchRAG(t *testing.T) {
 	})
 	body := decodeJSON(t, resp)
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d (%v)", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
 	}
-	// Penolakan harus eksplisit dan bisa dibedakan dari request tidak valid.
-	if body["failure_type"] != "backend_not_available" {
-		t.Errorf("expected failure_type=backend_not_available, got %v", body["failure_type"])
-	}
-	if body["field"] != "backend" {
-		t.Errorf("expected field=backend, got %v", body["field"])
+	if body["backend"] != "research_rag" {
+		t.Errorf("expected backend=research_rag, got %v", body["backend"])
 	}
 	if body["request_id"] == "" {
-		t.Error("error response harus tetap membawa request_id")
+		t.Error("response harus tetap membawa request_id")
 	}
 }
 
-func TestAsk_RejectsResearchRAG(t *testing.T) {
+func TestAsk_AcceptsResearchRAG(t *testing.T) {
 	ts := newTestServer(newTestRegistry())
 	defer ts.Close()
 
@@ -242,11 +238,14 @@ func TestAsk_RejectsResearchRAG(t *testing.T) {
 	})
 	body := decodeJSON(t, resp)
 
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d (%v)", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
 	}
-	if body["failure_type"] != "backend_not_available" {
-		t.Errorf("expected backend_not_available, got %v", body["failure_type"])
+	if body["backend"] != "research_rag" {
+		t.Errorf("expected backend=research_rag, got %v", body["backend"])
+	}
+	if body["request_id"] == "" {
+		t.Error("error response harus tetap membawa request_id")
 	}
 }
 
