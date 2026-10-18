@@ -5,6 +5,7 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 env:
   GO_VERSION: "1.22"
@@ -122,3 +123,18 @@ jobs:
 
       - name: Verify image built
         run: docker images mcp-gateway
+
+  # ─────────────────────────────────────────
+  # Job 4: Secrets scan (file tracked)
+  # ─────────────────────────────────────────
+  secrets-scan:
+    name: Secrets scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No real Groq keys in tracked files
+        run: |
+          if grep -rqE 'gsk_[A-Za-z0-9]{30,}' --exclude-dir=.git .; then
+            echo "::error::Real-looking Groq key found in tracked files!"; exit 1
+          fi
+          echo "clean ✓"
