@@ -163,6 +163,18 @@ Measured on local machine (WSL2, CPU only):
 
 The answer route attempts evaluation after a successful backend (ArXiv) search when answer and source context are available. It skips abstentions (backend sentinels, `insufficient_context`, or RAG `REJECT`). Evaluation is diagnostic evidence support, not proof that an answer is factually correct. An unavailable or skipped evaluation is not stored as a zero score.
 
+### `evaluation_status` semantics
+
+`evaluation_status` is always present and is never inferred from a score — a legitimate `0` and "not evaluated" are different states. Every `/ask` plan places an evaluation step after the answering step; what differs is how that step ends:
+
+| Status | Meaning | Triggers |
+|---|---|---|
+| `skipped` | By design, there was nothing to evaluate (or evaluation was not part of the executed plan). No score is returned. | (1) the answering step produced no answer/context; (2) the backend **abstained** — a gate rejection is an intentional outcome, not a failure; (3) the executed plan carried no evaluation step (e.g. a Groq-routed plan without it). |
+| `unavailable` | Evaluation was planned, but the evaluator could not produce a trustworthy score. **The answer stays valid** — `failure_type` is not altered. | Evaluator unreachable or exceeding its timeout (default 120s), non-200 response, malformed body, or a success response without a parseable score. |
+| `completed` | The evaluator ran and returned a valid score. | `evaluation.score` is filled, with optional `failure_mode` (`none`, `unsupported_claims`, `insufficient_context`) and `evaluator_version`. |
+
+Worked example (live workspace behavior): an `/ask` with `backend: research_rag` whose quality gate rejects the generated text returns `decision: "abstain"` together with `evaluation_status: "skipped"` — correct, because an abstention has nothing to grade and is not an error.
+
 ```
 Query → search_arxiv → answer + source context → evaluate_answer (when possible)
                                                      │
