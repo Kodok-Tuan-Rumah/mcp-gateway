@@ -53,8 +53,8 @@ func TestResearchRAG_ContractSuccess(t *testing.T) {
 		ToolName: "research_rag",
 		TraceID:  "trace-adapter",
 		Params: map[string]interface{}{
-			"query":     "  what is retrieval  ",
-			"top_k":     float64(7),
+			"query":        "  what is retrieval  ",
+			"top_k":        float64(7),
 			"use_reranker": true,
 		},
 	})

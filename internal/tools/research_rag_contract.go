@@ -38,27 +38,27 @@ type ResearchRAGRequest struct {
 
 // ResearchRAGResponse is the verified response from POST /generate.
 type ResearchRAGResponse struct {
-	Query                string             `json:"query"`
-	Answer               string             `json:"answer"`
-	RetrievedChunks      []ResearchRAGChunk `json:"retrieved_chunks"`
-	RetrievalMethod      string             `json:"retrieval_method"`
-	LatencyRetrievalMs   float64            `json:"latency_retrieval_ms"`
-	LatencyGenerationMs  float64            `json:"latency_generation_ms"`
-	LatencyTotalMs       float64            `json:"latency_total_ms"`
-	Model                string             `json:"model"`
-	Confidence           float64            `json:"confidence"`
-	Decision             string             `json:"decision"`
-	FailureType          string             `json:"failure_type,omitempty"`
-	GeneratorStatus      string             `json:"generator_status,omitempty"`
-	GeneratorConfidence  *float64           `json:"generator_confidence,omitempty"`
+	Query               string             `json:"query"`
+	Answer              string             `json:"answer"`
+	RetrievedChunks     []ResearchRAGChunk `json:"retrieved_chunks"`
+	RetrievalMethod     string             `json:"retrieval_method"`
+	LatencyRetrievalMs  float64            `json:"latency_retrieval_ms"`
+	LatencyGenerationMs float64            `json:"latency_generation_ms"`
+	LatencyTotalMs      float64            `json:"latency_total_ms"`
+	Model               string             `json:"model"`
+	Confidence          float64            `json:"confidence"`
+	Decision            string             `json:"decision"`
+	FailureType         string             `json:"failure_type,omitempty"`
+	GeneratorStatus     string             `json:"generator_status,omitempty"`
+	GeneratorConfidence *float64           `json:"generator_confidence,omitempty"`
 }
 
 // ResearchRAGChunk is one retrieved chunk returned by rag-research.
 type ResearchRAGChunk struct {
-	ChunkID  string  `json:"chunk_id"`
-	DocID    string  `json:"doc_id"`
-	Text     string  `json:"text"`
-	Score    float64 `json:"score"`
+	ChunkID string  `json:"chunk_id"`
+	DocID   string  `json:"doc_id"`
+	Text    string  `json:"text"`
+	Score   float64 `json:"score"`
 }
 
 // AnswerText returns the backend's answer text.
@@ -102,15 +102,15 @@ func (r ResearchRAGResponse) ToolData() map[string]interface{} {
 	}
 
 	data := map[string]interface{}{
-		"answer":               r.Answer,
-		"retrieved_chunks":     chunks,
-		"retrieval_method":     r.RetrievalMethod,
-		"latency_retrieval_ms": r.LatencyRetrievalMs,
+		"answer":                r.Answer,
+		"retrieved_chunks":      chunks,
+		"retrieval_method":      r.RetrievalMethod,
+		"latency_retrieval_ms":  r.LatencyRetrievalMs,
 		"latency_generation_ms": r.LatencyGenerationMs,
-		"latency_total_ms":     r.LatencyTotalMs,
-		"model":                r.Model,
-		"confidence":           r.Confidence,
-		"decision":             r.Decision,
+		"latency_total_ms":      r.LatencyTotalMs,
+		"model":                 r.Model,
+		"confidence":            r.Confidence,
+		"decision":              r.Decision,
 	}
 	if r.FailureType != "" {
 		data["failure_type"] = r.FailureType

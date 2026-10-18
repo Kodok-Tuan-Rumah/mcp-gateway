@@ -51,12 +51,12 @@ func newTestRegistry() *registry.Registry {
 					map[string]interface{}{"chunk_id": "c1", "doc_id": "d1", "text": "chunk A", "score": 0.82},
 					map[string]interface{}{"chunk_id": "c2", "doc_id": "d2", "text": "chunk B", "score": 0.70},
 				},
-				"model":                "phi3:mini",
-				"confidence":           0.85,
-				"decision":             "GENERATE",
-				"latency_retrieval_ms": 120,
+				"model":                 "phi3:mini",
+				"confidence":            0.85,
+				"decision":              "GENERATE",
+				"latency_retrieval_ms":  120,
 				"latency_generation_ms": 3400,
-				"latency_total_ms":     3520,
+				"latency_total_ms":      3520,
 			},
 		}
 	})
