@@ -77,7 +77,7 @@ curl -s -X POST "$BASE/tool" -H 'Content-Type: application/json' \
   -d '{"tool_name":"tidak_ada"}' | j
 
 # ──────────────────── /plan: routing + kegagalan jujur ────────────────────
-say "POST /plan — research_rag harus 400 (backend_not_available)"
+say "POST /plan — research_rag kini AKTIF: 200, steps → research_rag + evaluate_answer"
 http_post /plan '{"backend":"research_rag","query":"apa itu RAG?"}'
 
 say "POST /plan — backend tidak dikenal harus 400 (invalid_request)"

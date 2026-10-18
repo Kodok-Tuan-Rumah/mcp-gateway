@@ -15,14 +15,15 @@ import (
 // PascalCase; jawaban dan metadata backend dipetakan ke kontrak publik melalui
 // api.GatewayResponse sebelum dikirim.
 type ExecutionResult struct {
-	Query    string
-	Steps    []StepResult
-	Answer   string
-	Context  string
-	Evidence []api.Evidence
-	Model    string
-	Latency  *api.StageLatency
-	Score    float64
+	Query     string
+	Steps     []StepResult
+	Answer    string
+	Context   string
+	Evidence  []api.Evidence
+	Model     string
+	Latency   *api.StageLatency
+	Score     float64
+	Abstained bool
 }
 
 type StepResult struct {
@@ -57,7 +58,7 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 				continue
 			}
 			switch {
-			case strings.TrimSpace(answer) == api.ArxivAbstainText:
+			case result.Abstained, strings.TrimSpace(answer) == api.ArxivAbstainText:
 				result.Steps = append(result.Steps, StepResult{
 					ToolName: step.ToolName,
 					Success:  false,
@@ -88,17 +89,22 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 		}
 
 		// extract answer dan context dari hasil tool
-		if step.ToolName == "search_arxiv" {
+		// search_arxiv dan research_rag sama-sama menghasilkan jawaban akhir;
+		// keduanya punya kontrak titik-ketik yang sama (AnswerText/ModelName/
+		// Evidence/Latency/IsAbstention).
+		if step.ToolName == "search_arxiv" || step.ToolName == "research_rag" {
 			if typed, ok := resp.TypedResult.(interface {
 				AnswerText() string
 				ModelName() string
 				Evidence() []api.Evidence
 				Latency() *api.StageLatency
+				IsAbstention() bool
 			}); ok {
 				answer = typed.AnswerText()
 				result.Model = typed.ModelName()
 				result.Evidence = typed.Evidence()
 				result.Latency = typed.Latency()
+				result.Abstained = typed.IsAbstention()
 			} else {
 				// Keep compatibility with registry handlers that still return the
 				// wire-shaped Data map, while the production adapter passes its
@@ -110,6 +116,18 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 					result.Model = model
 				}
 				result.Evidence = evidenceFromToolData(resp.Data)
+				// Deteksi abstensi sama dengan ResearchRAGResponse.IsAbstention:
+				// decision REJECT (kontrak /ask) atau framing /generate
+				// (sentinel jawaban + failure_type insufficient_context).
+				if decision, ok := resp.Data["decision"].(string); ok && decision == "REJECT" {
+					result.Abstained = true
+				}
+				if failure, ok := resp.Data["failure_type"].(string); ok && failure == api.FailureInsufficientContext {
+					result.Abstained = true
+				}
+				if ans, ok := resp.Data["answer"].(string); ok && ans == api.RAGAbstainText {
+					result.Abstained = true
+				}
 			}
 			contextStr = evidenceContext(result.Evidence)
 		}

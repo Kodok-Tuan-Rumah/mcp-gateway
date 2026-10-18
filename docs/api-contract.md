@@ -71,7 +71,7 @@
 | Backend | Tool yang boleh dipakai | Status |
 |---|---|---|
 | `arxiv` | `search_arxiv`, `evaluate_answer` | ✅ aktif |
-| `research_rag` | — | ❌ 400 `backend_not_available` |
+| `research_rag` | `research_rag`, `evaluate_answer` | ✅ aktif (adapter `/generate`) |
 
 `retrieve_chunks` **tidak ada di backend mana pun** pada v1: adapter-nya masih
 menembak endpoint yang tidak ada di `rag-research`. Lihat
@@ -83,8 +83,8 @@ menembak endpoint yang tidak ada di `rag-research`. Lihat
 |---|---|
 | Client memilih backend | Deterministik; client yang tahu apakah kebutuhannya corpus ArXiv atau dokumen umum |
 | Default `arxiv` | Satu-satunya adapter yang kontraknya sudah terverifikasi terhadap source (`/query` → `answer` + `sources[{text, score, arxiv_id}]`) |
-| `research_rag` ditolak 400 | `rag-research` tidak punya route `/retrieve` sama sekali. Menolak eksplisit lebih jujur daripada fallback diam-diam yang menghasilkan jawaban kosong |
-| Groq tidak memilih backend | Memilih tool secara LLM bersifat non-deterministic, sedangkan Phase 0 mensyaratkan routing deterministik |
+| `research_rag` via `/generate` | `rag-research` menjawab di `POST /generate` (port 8000) dengan `answer` + `retrieved_chunks`; adapter-nya terpisah dari `retrieve_chunks` yang tetap tidak dipakai |
+| Groq tidak memilih backend | Memilih tool secara LLM bersifat non-deterministic, sedangkan routing backend ditentukan client; Groq hanya menyusun urutan langkah |
 
 > **Target kontrak workspace:** setelah adapter RAG aktif, client mengirim
 > `backend` secara eksplisit. Default ArXiv di atas hanya untuk tahap integrasi
@@ -166,8 +166,8 @@ secara struktural mustahil diserialisasi menjadi 0, dan
 ```json
 {
   "request_id": "req-abc126",
-  "failure_type": "backend_not_available",
-  "message": "backend research_rag is not available in v1: no adapter implemented",
+  "failure_type": "invalid_request",
+  "message": "backend nonsense is not recognized; use `arxiv` or `research_rag`",
   "field": "backend"
 }
 ```
@@ -212,7 +212,7 @@ keduanya tidak bisa berasal dari backend berbeda.
 
 | Tidak ada | Alasan |
 |---|---|
-| `research_rag` | Adapter belum ada — `rag-research` tidak punya `/retrieve` (Phase 3) |
+| `retrieve_chunks` dari jalur jawaban | `rag-research` tidak punya `/retrieve`; `research_rag` menjawab via `/generate` |
 | Auto-retry | Sudah dihapus dari jalur jawaban; masih memakai trigger `score` yang belum valid (Phase 2) |
 | Readiness check | `/health` hanya liveness (Phase 4) |
 | `X-Request-ID` ke downstream | Adapter belum meneruskan header (Phase 3) |

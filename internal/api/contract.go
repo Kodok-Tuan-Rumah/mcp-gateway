@@ -49,6 +49,13 @@ const (
 // response mapping agree on when evaluation must be skipped.
 const ArxivAbstainText = "Not found in context."
 
+// RAGAbstainText is the sentinel rag-research writes into the answer field when
+// its generator (or evidence gate) decides the retrieved context is not enough.
+// Note: rag-research POST /generate keeps decision=="GENERATE" on abstention,
+// so detection must combine the sentinel with failure_type — see
+// ResearchRAGResponse.IsAbstention.
+const RAGAbstainText = "INSUFFICIENT_CONTEXT"
+
 // FailureType: kategorisasi kegagalan. "none" berarti tidak ada kegagalan;
 // nilai selain itu harus selalu bisa dipertahankan sampai ke response.
 const (

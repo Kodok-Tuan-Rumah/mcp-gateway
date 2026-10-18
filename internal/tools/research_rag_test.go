@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/malikimayzar/mcp-gateway/internal/api"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 )
 
@@ -173,6 +174,16 @@ func TestResearchRAG_IsAbstention(t *testing.T) {
 	generate := ResearchRAGResponse{Decision: "GENERATE"}
 	if generate.IsAbstention() {
 		t.Errorf("decision GENERATE should not be abstention")
+	}
+	// framing /generate saat rag-research absten: decision tetap GENERATE,
+	// abstensi ditandai failure_type atau sentinel jawaban.
+	genAbstainFailure := ResearchRAGResponse{Decision: "GENERATE", FailureType: api.FailureInsufficientContext}
+	if !genAbstainFailure.IsAbstention() {
+		t.Errorf("GENERATE + failure_type insufficient_context should be abstention")
+	}
+	genAbstainSentinel := ResearchRAGResponse{Decision: "GENERATE", Answer: api.RAGAbstainText}
+	if !genAbstainSentinel.IsAbstention() {
+		t.Errorf("GENERATE + sentinel answer should be abstention")
 	}
 }
 

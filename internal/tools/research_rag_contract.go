@@ -134,7 +134,16 @@ func (r ResearchRAGResponse) Latency() *api.StageLatency {
 }
 
 // IsAbstention reports whether the backend decided the context is insufficient
-// to answer (decision == "REJECT").
+// to answer. rag-research frames abstention differently depending on the
+// endpoint: POST /ask answers with decision=="REJECT", while POST /generate
+// may keep decision=="GENERATE" and instead signal abstention through the
+// sentinel answer plus failure_type=="insufficient_context".
 func (r ResearchRAGResponse) IsAbstention() bool {
-	return strings.TrimSpace(r.Decision) == "REJECT"
+	if strings.TrimSpace(r.Decision) == "REJECT" {
+		return true
+	}
+	if r.FailureType == api.FailureInsufficientContext {
+		return true
+	}
+	return strings.TrimSpace(r.Answer) == api.RAGAbstainText
 }

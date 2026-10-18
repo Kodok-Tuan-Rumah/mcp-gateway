@@ -11,6 +11,8 @@ import (
 
 // validateArxivResponse checks required wire fields before decoding into the
 // typed response. Unknown fields remain allowed for backend compatibility.
+// retrieval_ms/generation_ms are optional: the backend's insufficient-context
+// response (insufficient_context: true) omits both latencies.
 func validateArxivResponse(body []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(body, &fields); err != nil {
@@ -19,7 +21,7 @@ func validateArxivResponse(body []byte) error {
 	if fields == nil {
 		return fmt.Errorf("response must be a JSON object")
 	}
-	for _, name := range []string{"answer", "sources", "retrieval_ms", "generation_ms", "model"} {
+	for _, name := range []string{"answer", "sources", "model"} {
 		raw, ok := fields[name]
 		if !ok || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 			return fmt.Errorf("required field %q is missing or null", name)
@@ -40,12 +42,13 @@ type ArxivQueryRequest struct {
 // ArxivQueryResponse is the verified response from POST /query. LogID is
 // included because the backend declares it, though it may be omitted.
 type ArxivQueryResponse struct {
-	Answer       string        `json:"answer"`
-	Sources      []ArxivSource `json:"sources"`
-	RetrievalMs  int64         `json:"retrieval_ms"`
-	GenerationMs int64         `json:"generation_ms"`
-	Model        string        `json:"model"`
-	LogID        string        `json:"log_id,omitempty"`
+	Answer              string        `json:"answer"`
+	Sources             []ArxivSource `json:"sources"`
+	RetrievalMs         int64         `json:"retrieval_ms"`
+	GenerationMs        int64         `json:"generation_ms"`
+	Model               string        `json:"model"`
+	LogID               string        `json:"log_id,omitempty"`
+	InsufficientContext bool          `json:"insufficient_context,omitempty"`
 }
 
 func (r ArxivQueryResponse) AnswerText() string { return r.Answer }
@@ -114,7 +117,12 @@ func (r ArxivQueryResponse) Latency() *api.StageLatency {
 	}
 }
 
-// IsAbstention reports the ArXiv backend's current sentinel-based abstention.
+// IsAbstention reports the ArXiv backend's abstention: either the legacy
+// sentinel answer or the newer explicit insufficient_context response (which
+// carries the answer "No relevant chunks found.").
 func (r ArxivQueryResponse) IsAbstention() bool {
+	if r.InsufficientContext {
+		return true
+	}
 	return strings.TrimSpace(r.Answer) == api.ArxivAbstainText
 }

@@ -66,6 +66,12 @@ func applyDecision(resp *api.GatewayResponse, result planner.ExecutionResult) {
 		resp.Decision = api.DecisionAbstain
 		resp.FailureType = api.FailureInsufficientContext
 
+	case result.Abstained:
+		// Abstensi backend lain (mis. RAG dengan decision == "REJECT")
+		// dipertahankan jawabannya apa adanya.
+		resp.Decision = api.DecisionAbstain
+		resp.FailureType = api.FailureInsufficientContext
+
 	default:
 		resp.Decision = api.DecisionAnswer
 		resp.FailureType = api.FailureNone

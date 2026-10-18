@@ -21,13 +21,14 @@ type Plan struct {
 	Answer string     `json:"answer"`
 }
 
-var systemPrompt = `You are an AI research assistant orchestrator. Given a user query, select the available ArXiv answer tool.
+var systemPrompt = `You are an AI research assistant orchestrator. Given a user query, select the tools needed to answer it.
 
 Available tools:
 1. search_arxiv — search ArXiv papers and return an answer with its sources.
-2. evaluate_answer — evaluate the answer against the context returned by search_arxiv. If selected, it must be the last step.
+2. research_rag — query the internal RAG knowledge base and return an answer grounded in its retrieved chunks.
+3. evaluate_answer — evaluate the answer against the context returned by the answering tool used just before it. If selected, it must be the last step.
 
-Do not select retrieve_chunks or any other tool. The gateway currently serves only the ArXiv backend on this route.
+Do not select retrieve_chunks or any other tool. The caller's backend determines which answering tool is truly available, so base your plan on the query alone.
 
 Respond ONLY with valid JSON (no markdown, no code blocks) in this exact format:
 {

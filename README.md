@@ -10,7 +10,7 @@ Client → HTTP Gateway :8090 → selected backend → answer + evidence
                                       └→ optional evaluator → status/score
 
 Intended workspace services:
-  ArXiv Assistant :8080  |  RAG Research :8003  |  Eval API :8002
+  ArXiv Assistant :8080  |  RAG Research :8000  |  Eval API :8002
 ```
 
 ## What This Is
@@ -44,7 +44,7 @@ evidence. Gateway melewati evaluasi untuk abstensi atau context kosong.
 |---|---|---|---|
 | **mcp-gateway** | Go + chi | 8090 | Orchestration, routing, adapter dispatch |
 | **arxiv-research-assistant** | Go + Python + Qdrant | 8080 | ArXiv answer backend (`/query`) — the only active backend |
-| **rag-research** | Python + Qdrant + BM25 | 8003 | Research RAG (`/generate`) — **not integrated**; the gateway calls no route here yet |
+| **rag-research** | Python + Qdrant + BM25 | 8000 | Research RAG (`/generate`) — active backend via `research_rag` |
 | **llm-eval-framework** | Python + Ollama | 8002 | Faithfulness evaluation, failure mode analysis |
 | **PostgreSQL** | postgres:16-alpine | 5432 | Gateway eval log in its own `gateway_query_logs` table (database owned by `arxiv-research-assistant`) |
 | **Qdrant** | qdrant/qdrant | 6333 | Vector store, used by the backend services |
@@ -88,7 +88,7 @@ service is reachable — that check does not exist yet.
 ## API
 
 ### `POST /ask` — ArXiv answer flow
-Groq may select the ArXiv search step; the gateway filters the plan to the selected backend and falls back to a deterministic plan if Groq is unavailable or returns no usable answer step. The gateway currently supports only the `arxiv` backend for answer routes.
+Groq may select the answering steps (search or RAG or both backends' tools); the gateway filters the plan to the selected backend and falls back to a deterministic plan if Groq is unavailable or returns no usable answer step. Answer backends are `arxiv` and `research_rag`.
 
 ```bash
 curl -X POST http://localhost:8090/ask \
@@ -161,7 +161,7 @@ Measured on local machine (WSL2, CPU only):
 
 ## Current Evaluation Flow
 
-The answer route attempts evaluation after a successful ArXiv search when answer and source context are available. It skips abstentions and answers shorter than five words because the evaluator's short-answer API currently lacks its required ground truth input. Evaluation is diagnostic evidence support, not proof that an answer is factually correct. An unavailable or skipped evaluation is not stored as a zero score.
+The answer route attempts evaluation after a successful backend (ArXiv) search when answer and source context are available. It skips abstentions (backend sentinels, `insufficient_context`, or RAG `REJECT`). Evaluation is diagnostic evidence support, not proof that an answer is factually correct. An unavailable or skipped evaluation is not stored as a zero score.
 
 ```
 Query → search_arxiv → answer + source context → evaluate_answer (when possible)
@@ -252,7 +252,7 @@ POSTGRES_DSN=host=localhost ...  # unset or empty → local default DSN; if the 
 # Service addresses (gateway appends /query, /evaluate)
 ARXIV_SERVICE_URL=http://localhost:8080
 EVAL_SERVICE_URL=http://localhost:8002
-RAG_SERVICE_URL=http://arxiv-rag-service:8003
+RAG_SERVICE_URL=http://rag-api:8000
 
 # Timeouts and response bounds
 GATEWAY_LISTEN_ADDRESS=:8090

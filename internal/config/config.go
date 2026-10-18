@@ -24,8 +24,10 @@ const (
 	DefaultEvaluatorServiceURL      = "http://localhost:8002"
 	DefaultEvaluatorTimeout         = 120 * time.Second
 	DefaultEvaluatorMaxResponseSize = 1 << 20
-	DefaultRAGServiceURL            = "http://arxiv-rag-service:8003"
-	DefaultRAGTimeout               = 10 * time.Second
+	DefaultRAGServiceURL            = "http://rag-api:8000"
+	// 60s: generation can retry upstream providers (Groq rate limits), so the
+	// default must absorb one retry round on top of a ~7s happy path.
+	DefaultRAGTimeout               = 60 * time.Second
 	DefaultRAGMaxResponseBytes      = 4 << 20
 
 	// DefaultGroqModel adalah model orkestrator. Groq mencabut model dari
