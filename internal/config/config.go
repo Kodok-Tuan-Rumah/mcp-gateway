@@ -131,7 +131,45 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 		return Config{}, err
 	}
 
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
+
 	return cfg, nil
+}
+
+// Validate performs semantic startup validation on configuration values.
+func (c Config) Validate() error {
+	if strings.TrimSpace(c.ListenAddress) == "" {
+		return fmt.Errorf("GATEWAY_LISTEN_ADDRESS cannot be empty")
+	}
+	if err := validateServiceConfig("ARXIV_SERVICE_URL", c.Arxiv); err != nil {
+		return err
+	}
+	if err := validateServiceConfig("EVAL_SERVICE_URL", c.Evaluator); err != nil {
+		return err
+	}
+	if err := validateServiceConfig("RAG_SERVICE_URL", c.RAG); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateServiceConfig(name string, s ServiceConfig) error {
+	base := strings.TrimSpace(s.BaseURL)
+	if base == "" {
+		return fmt.Errorf("%s cannot be empty", name)
+	}
+	if !strings.HasPrefix(base, "http://") && !strings.HasPrefix(base, "https://") {
+		return fmt.Errorf("%s must start with http:// or https://, got %q", name, base)
+	}
+	if s.Timeout <= 0 {
+		return fmt.Errorf("%s timeout must be positive", name)
+	}
+	if s.MaxResponseBytes <= 0 {
+		return fmt.Errorf("%s max response bytes must be positive", name)
+	}
+	return nil
 }
 
 func stringValue(lookup func(string) (string, bool), key, fallback string) string {

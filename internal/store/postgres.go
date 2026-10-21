@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	_ "github.com/lib/pq" // postgres driver
 )
@@ -47,8 +48,14 @@ func Init(dsn string) {
 		return
 	}
 
-	if err := db.Ping(); err != nil {
+	// sql.Open does not connect. Ping is the first real network call, so it must
+	// be bounded: otherwise an unreachable PostgreSQL host can delay gateway
+	// startup for the OS TCP timeout (minutes).
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
 		log.Printf("[store] failed to ping DB: %v", err)
+		_ = db.Close()
 		db = nil
 		return
 	}
@@ -57,6 +64,7 @@ func Init(dsn string) {
 		// Skema yang tidak ada akan membuat setiap penulisan gagal, jadi lebih
 		// baik dinonaktifkan sekarang dan dilaporkan.
 		log.Printf("[store] migration failed, logging disabled: %v", err)
+		_ = db.Close()
 		db = nil
 		return
 	}

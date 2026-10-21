@@ -36,15 +36,14 @@ These boundaries follow [`../WORKSPACE_DIRECTION.md`](../WORKSPACE_DIRECTION.md)
 - Request: `query` (3–1000 chars), optional `top_k` (1–20), optional `use_reranker` (default false).
 - Response includes `answer`, `retrieved_chunks[{chunk_id, doc_id, text, score, metadata, ranking_mode}]`, retrieval/generation/total latency, `model`, confidence, retry information, `decision`, `failure_type`, and abstention metadata.
 - `decision` values include `REJECT`, `PARTIAL_TRUST`, and `GENERATE`. A response can also abstain after generation via `generator_status=INSUFFICIENT_CONTEXT`; adapter mapping must inspect both fields rather than treating every HTTP 200 as an answer.
-- The current gateway `retrieve_chunks` adapter calls `POST /retrieve` on port `8003` and expects `results`. It is not an adapter for this API and must stay out of `/ask` and `/plan`. The gateway RAG backend should be a separate answer adapter for `/generate`.
+- The current gateway `retrieve_chunks` adapter uses `RAG_SERVICE_URL` (default port `8000`) and calls `POST /retrieve`, which this API does not expose. It is not an adapter for `/generate` and must stay out of `/ask` and `/plan`; the `research_rag` tool is the answer adapter.
 
 ### Evaluation Framework
 
 - FastAPI exposes `POST /evaluate` on port `8002`.
-- Request: `answer`, `context`, `question`. Response: `faithfulness_score`, `failure_mode`, `has_failure`, `supported_claims`, `total_claims`.
-- The service internally has `evaluator_version`, but `EvalResponse` does not return it.
-- `FaithfulnessEvaluator` sends answers shorter than the configured word threshold (default 5) through `_evaluate_short_answer`, which reads `ground_truth`. The HTTP request has no `ground_truth`; the empty string can match any string through Python's `empty in string` behavior. This can produce a false passing score for short answers.
-- The ArXiv abstention sentinel is four words and also enters that short-answer path. The gateway must skip evaluation for abstentions. Until the evaluator API is corrected, short answers must also be skipped or treated as unavailable; do not expose the score as a valid evaluation.
+- Request: `answer`, `context`, `question`. Response: `faithfulness_score`, `failure_mode`, `has_failure`, `supported_claims`, `total_claims`, `evaluator_version`.
+- `FaithfulnessEvaluator` sends answers shorter than the configured word threshold (default 5) through `_evaluate_short_answer`. When the HTTP request has no `ground_truth`, it now uses a conservative whole-word/phrase match against the supplied evidence instead of matching every answer against the empty string.
+- The ArXiv abstention sentinel is four words and still enters that short-answer path. The gateway skips evaluation for abstentions, so the abstention itself is not scored as a normal answer.
 - Evaluator container configuration must provide a reachable `OLLAMA_HOST`; its default `localhost:11434` points inside the evaluator container.
 
 ## Target request flow

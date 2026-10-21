@@ -22,7 +22,7 @@ Gunakan **Go untuk MCP Gateway** dan **Python untuk semua ML services**, berkomu
 Go (Gateway :8090)
   └── HTTP → Python FastAPI (arxiv :8001)
   └── HTTP → Python FastAPI (eval  :8002)
-  └── HTTP → Python FastAPI (rag   :8003)
+  └── HTTP → Python FastAPI (rag   :8000)
 ```
 
 ---

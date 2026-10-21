@@ -149,6 +149,32 @@ func applyEvaluation(resp *api.GatewayResponse, result planner.ExecutionResult) 
 	if version, ok := step.Data["evaluator_version"].(string); ok && strings.TrimSpace(version) != "" {
 		resp.Evaluation.Version = version
 	}
+	// Evaluator reports these alongside the score; dropping them made the
+	// public contract advertise fields that /ask and /plan never populated.
+	if n, ok := claimCount(step.Data, "supported_claims"); ok {
+		resp.Evaluation.SupportedClaims = n
+	}
+	if n, ok := claimCount(step.Data, "total_claims"); ok {
+		resp.Evaluation.TotalClaims = n
+	}
+}
+
+// claimCount reads a non-negative integer claim count from evaluator data.
+//
+// The HTTP adapter stores counts as int (EvaluateAnswerResponse.ToolData),
+// while tests and the raw /tool path can produce float64 after JSON decoding.
+func claimCount(data map[string]interface{}, key string) (int, bool) {
+	switch v := data[key].(type) {
+	case int:
+		if v >= 0 {
+			return v, true
+		}
+	case float64:
+		if v >= 0 && v == math.Trunc(v) && v <= 1_000_000 {
+			return int(v), true
+		}
+	}
+	return 0, false
 }
 
 // evalScore membaca skor dari data langkah evaluasi. Mengembalikan ok=false

@@ -3,7 +3,7 @@
 > Project boundaries and roadmap: [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and [`PROJECT_GOALS.md`](PROJECT_GOALS.md). Implementation checklist: [`IMPLEMENTATION_TODO.md`](IMPLEMENTATION_TODO.md). Next prioritized tasks: [`TODO_BERIKUTNYA.md`](TODO_BERIKUTNYA.md).
 
 > HTTP orchestration gateway for the AI research workspace.
-> Go API · backend adapters · integration work in progress.
+> Go API · ArXiv + RAG answer backends · evaluator status/score.
 
 ```text
 Client → HTTP Gateway :8090 → selected backend → answer + evidence
@@ -15,9 +15,9 @@ Intended workspace services:
 
 ## What This Is
 
-MCP Gateway is intended to be a thin orchestration layer across the four-repository workspace. Its first integration path is still being aligned: the adapters, deployment wiring, and answer/evidence handoff need to match the current backend APIs before the whole pipeline can be considered operational.
+MCP Gateway is a thin orchestration layer across the four-repository workspace. Both answer backends are wired: `arxiv` (`POST /query`) and `research_rag` (`POST /generate`). Answer, evidence, and the evaluator context are all taken from the selected backend, so evidence never crosses backends. The workspace root compose starts the four repositories and their shared infrastructure together.
 
-The gateway should route and report; retrieval and generation remain owned by the backend repositories. See the project direction documents linked above.
+The gateway routes and reports; retrieval and generation remain owned by the backend repositories. See the project direction documents linked above.
 
 Jawaban pendek tetap dikirim ke evaluator. Untuk request online tanpa
 `ground_truth`, evaluator memakai exact match konservatif terhadap context
@@ -43,15 +43,15 @@ evidence. Gateway melewati evaluasi untuk abstensi atau context kosong.
 | Service | Stack | Port | Role |
 |---|---|---|---|
 | **mcp-gateway** | Go + chi | 8090 | Orchestration, routing, adapter dispatch |
-| **arxiv-research-assistant** | Go + Python + Qdrant | 8080 | ArXiv answer backend (`/query`) — the only active backend |
+| **arxiv-research-assistant** | Go + Python + Qdrant | 8080 | ArXiv answer backend (`/query`) — active backend |
 | **rag-research** | Python + Qdrant + BM25 | 8000 | Research RAG (`/generate`) — active backend via `research_rag` |
 | **llm-eval-framework** | Python + Ollama | 8002 | Faithfulness evaluation, failure mode analysis |
 | **PostgreSQL** | postgres:16-alpine | 5432 | Gateway eval log in its own `gateway_query_logs` table (database owned by `arxiv-research-assistant`) |
 | **Qdrant** | qdrant/qdrant | 6333 | Vector store, used by the backend services |
-| **Grafana / Prometheus** | — | 3000 / 9090 | Monitoring, owned by `arxiv-research-assistant`; Grafana has no provisioned dashboards yet |
+| **Grafana / Prometheus** | — | 3000 / 9090 | Monitoring; the workspace root provisions the Prometheus datasource and overview dashboard |
 
-This repository does not start these dependencies. Each has its own deployment
-path in its own repository.
+This repository does not start these dependencies itself. The workspace root
+compose starts them, and each project also has its own deployment path.
 
 ---
 
@@ -75,19 +75,19 @@ go run ./cmd/server
 curl -s http://localhost:8090/health
 ```
 
-**Full-stack startup is not ready yet.** This repository does not include a
-Compose file connecting the four repositories, and the RAG adapter does not
-match `rag-research`'s current API. See [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md)
-and [`PROJECT_GOALS.md`](PROJECT_GOALS.md) for the integration gates.
+Full-stack startup is owned by the workspace root compose (`make up` from the
+workspace root), which starts the four repositories together. This repository's
+`make demo` still runs the gateway standalone without downstream services.
 
-A healthy `/health` means the process is alive. It does not mean any downstream
-service is reachable — that check does not exist yet.
+A healthy `/health` means the process is alive. Use `/ready` for dependency
+state: it probes the configured ArXiv, evaluator, and RAG endpoints concurrently
+and returns `503` when any probe is not `up`.
 
 ---
 
 ## API
 
-### `POST /ask` — ArXiv answer flow
+### `POST /ask` — answer flow
 Groq may select the answering steps (search or RAG or both backends' tools); the gateway filters the plan to the selected backend and falls back to a deterministic plan if Groq is unavailable or returns no usable answer step. Answer backends are `arxiv` and `research_rag`.
 
 ```bash
@@ -116,8 +116,8 @@ curl -X POST http://localhost:8090/ask \
 
 The response includes structured `evidence[]` from the same ArXiv result used to build evaluator context. Abstentions return `decision: "abstain"` with `failure_type: "insufficient_context"`; backend failures return `decision: "error"`. If evaluation is skipped or unavailable, that status stays separate from the answer and no score is returned.
 
-### `POST /plan` — Deterministic ArXiv flow
-Runs the ArXiv search and evaluation plan without calling Groq. It does not perform automatic retry.
+### `POST /plan` — deterministic answer flow
+Runs the selected backend's answer and evaluation plan without calling Groq. It does not perform automatic retry.
 
 ```bash
 curl -X POST http://localhost:8090/plan \
@@ -139,8 +139,18 @@ curl -X POST http://localhost:8090/tool \
 
 ### `GET /health`
 ```json
-{"check": "liveness", "status": "ok", "tools": ["evaluate_answer", "retrieve_chunks", "search_arxiv"]}
+{"check": "liveness", "status": "ok", "tools": ["evaluate_answer", "research_rag", "retrieve_chunks", "search_arxiv"]}
 ```
+
+### `GET /ready`
+Probes the configured ArXiv, evaluator, and RAG `/health` endpoints concurrently.
+
+```json
+{"check": "readiness", "status": "ready", "services": {"arxiv": "up", "evaluator": "up", "rag": "up"}}
+```
+
+A dependency that returns a non-200 response is reported as `degraded`; an
+unreachable one is `down`. Either makes the endpoint return `503`.
 
 ---
 
@@ -272,7 +282,7 @@ GATEWAY_REQUEST_TIMEOUT=620s
 STORE_LOG_TIMEOUT=5s
 ARXIV_TIMEOUT=600s
 EVAL_TIMEOUT=120s
-RAG_TIMEOUT=10s
+RAG_TIMEOUT=60s
 ARXIV_MAX_RESPONSE_BYTES=4194304
 EVAL_MAX_RESPONSE_BYTES=1048576
 RAG_MAX_RESPONSE_BYTES=4194304
@@ -281,9 +291,9 @@ RAG_MAX_RESPONSE_BYTES=4194304
 Invalid durations or sizes fail startup with an error naming the variable,
 rather than silently falling back.
 
-`RAG_SERVICE_URL` is not consumed by the active answer routes. The
-`retrieve_chunks` tool remains registered for visibility, but its downstream
-API contract is not implemented.
+`RAG_SERVICE_URL` is consumed by the active `research_rag` answer route and by
+the low-level `retrieve_chunks` tool. `retrieve_chunks` remains registered for
+visibility, but its downstream contract is not used by `/ask` or `/plan`.
 
 ---
 

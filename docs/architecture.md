@@ -16,7 +16,7 @@ flowchart TD
         direction LR
         ARXIV["📄 arxiv-research-assistant\n:8080 / :8001"]
         EVAL["🔬 llm-eval-framework\n:8002"]
-        RAG["📦 rag-research\n:8003"]
+        RAG["📦 rag-research\n:8000"]
     end
 
     subgraph INFRA["⚙️  Infrastructure"]

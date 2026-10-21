@@ -380,6 +380,14 @@ func TestPlan_EvaluationIsActuallyWired(t *testing.T) {
 	if score != 0.86 {
 		t.Errorf("expected 0.86 dari stub, got %v", score)
 	}
+	// The evaluator returns claim counts; they are part of the public contract
+	// and must not be dropped while mapping the tool result.
+	if got := eval["supported_claims"]; got != float64(3) {
+		t.Errorf("expected supported_claims=3, got %v", got)
+	}
+	if got := eval["total_claims"]; got != float64(4) {
+		t.Errorf("expected total_claims=4, got %v", got)
+	}
 }
 
 // Plan hanya boleh menyentuh satu backend. Query dengan kata "research"/"study"

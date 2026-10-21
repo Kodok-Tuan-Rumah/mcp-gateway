@@ -1,7 +1,7 @@
 # PROJECT: AI Research Workspace Gateway
 
 > **Project direction:** Keep the gateway thin. It routes research questions to a clearly owned backend and returns the answer with its evidence, provenance, and honest evaluation status. The four repositories remain independently useful services/projects; this workspace is not yet a verified single deployment.
-> **Source snapshot:** 2026-10-15. `PROJECT_GOALS.md` defines intended boundaries and phase gates; this file summarizes current source-level architecture and known integration state.
+> **Source snapshot:** 2026-10-22. `PROJECT_GOALS.md` defines intended boundaries and phase gates; this file summarizes current source-level architecture and known integration state.
 
 ## GOAL
 
@@ -35,25 +35,25 @@ Suggested boundaries:
 
 ```text
 POST /ask or /plan
-  → validate request and restrict tools to the selected backend (currently ArXiv only)
-  → call ArXiv adapter; /ask may use a filtered Groq plan, /plan uses a deterministic plan
-  → executor extracts answer/source context and optionally calls evaluator
-  → map result to the public response; persist only a valid evaluation score asynchronously
+  → validate request and restrict tools to the selected backend (arxiv or research_rag)
+  → call the selected backend adapter; /ask may use a filtered Groq plan,
+    /plan uses a deterministic backend-specific plan
+  → executor normalizes answer + evidence and optionally calls evaluator
+  → map result to the public response; persist only a valid evaluation asynchronously
+  → GET /ready probes ArXiv, evaluator, and RAG concurrently
 ```
 
-The code has the beginnings of this flow, but it is not yet an end-to-end working integration:
+The active answer path is wired end to end at source level:
 
-* Gateway `retrieve_chunks` still points to `http://arxiv-rag-service:8003/retrieve`; `rag-research` currently exposes `/generate` on port 8000 and returns `retrieved_chunks`, not `results`.
-* The ArXiv adapter calls the Go backend `/query`, which already performs retrieval and generation. The local RAG adapter is intended to call a different service; their answers and contexts must not be mixed accidentally.
-* The active `/ask` and `/plan` routes use backend-scoped plans and do not include `retrieve_chunks`. The old `MakePlan` and `ExecuteWithRetry` helpers still exist as a legacy path; they can mix answers and contexts if called, so they should be removed or isolated.
-* The active response does not yet normalize ArXiv `sources[]` into structured `evidence[]`; source text is currently extracted for evaluator context only.
-* The legacy executor may use retrieved context text itself as `answer`. That is not a meaningful final answer to score and must remain outside public answer flows.
-* Groq plans are now constrained to one ArXiv answer step and an optional evaluation step placed afterward; query and `top_k` are taken from the validated client request.
-* ArXiv and evaluator base URLs are configurable with `ARXIV_SERVICE_URL` and `EVAL_SERVICE_URL`. The legacy retrieval adapter remains hard-coded and unsupported; a shared deployment still needs explicit service/network configuration.
-* The evaluator uses Ollama embeddings. Its default host is localhost, which is generally not the Ollama service when the evaluator runs in its own container. Its short-answer path also requires `ground_truth` that the HTTP API does not accept; the gateway skips abstentions and answers shorter than five words until that contract is fixed.
-* There is no gateway Compose file. Existing Compose files are per repository and do not configure one shared service network.
+* The ArXiv adapter calls the Go backend `/query`; the RAG adapter calls `rag-research` `POST /generate`. Both normalize their own answer + evidence, so evidence cannot cross backends.
+* `/ask` and `/plan` accept `backend: "arxiv"` or `backend: "research_rag"`. Groq plans are filtered to the selected backend; the deterministic fallback uses the same backend-scoped plan.
+* ArXiv `sources[]` and RAG `retrieved_chunks[]` are normalized into structured `evidence[]` by their typed adapters. The evaluator receives the same answer and evidence.
+* Evaluation result maps `evaluation_status`, score, failure mode, evaluator version, `supported_claims`, and `total_claims`. An evaluator outage remains `unavailable`; it is never converted to score 0.
+* `retrieve_chunks` is still a low-level `/tool` passthrough. It uses the configured `RAG_SERVICE_URL` (default `:8000`) and calls `POST /retrieve`, an endpoint `rag-research` does not expose; it is deliberately excluded from `/ask` and `/plan`.
+* All three downstream base URLs and timeouts are configurable. The workspace root compose supplies `ARXIV_SERVICE_URL`, `EVAL_SERVICE_URL`, `RAG_SERVICE_URL`, and `OLLAMA_HOST`; this repository itself still has no Compose file.
+* The legacy `MakePlan`/`ExecuteWithRetry` path still exists for callers, but public answer routes use backend-scoped plans and never include `retrieve_chunks`.
 
-These observations are integration status only; no deployment or runtime behavior was verified during this source review.
+Runtime verification (containers, monitoring targets, and smoke test) is tracked separately from these source-level statements.
 
 ## RECOMMENDED FIRST RELEASE
 

@@ -8,11 +8,15 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/malikimayzar/mcp-gateway/internal/api"
 	"github.com/malikimayzar/mcp-gateway/internal/config"
@@ -21,6 +25,46 @@ import (
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
 )
+
+var (
+	httpRequestsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "gateway_http_requests_total",
+			Help: "Total HTTP requests processed by mcp-gateway",
+		},
+		[]string{"method", "path", "status"},
+	)
+	httpRequestDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "gateway_http_request_duration_seconds",
+			Help:    "HTTP request latency in seconds for mcp-gateway",
+			Buckets: prometheus.DefBuckets,
+		},
+		[]string{"method", "path"},
+	)
+)
+
+func init() {
+	// Register metrics safely (ignore registration errors if already registered in tests)
+	_ = prometheus.Register(httpRequestsTotal)
+	_ = prometheus.Register(httpRequestDuration)
+}
+
+func promMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		next.ServeHTTP(ww, r)
+		duration := time.Since(start).Seconds()
+
+		path := r.URL.Path
+		method := r.Method
+		statusStr := strconv.Itoa(ww.Status())
+
+		httpRequestsTotal.WithLabelValues(method, path, statusStr).Inc()
+		httpRequestDuration.WithLabelValues(method, path).Observe(duration)
+	})
+}
 
 // maxBodyBytes membatasi ukuran body request supaya endpoint publik tidak bisa
 // dipakai menghabiskan memori.
@@ -43,8 +87,11 @@ func newRouterWithConfig(reg *registry.Registry, cfg config.Config) http.Handler
 	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Logger)
+	r.Use(promMiddleware)
 
 	r.Get("/health", handleHealth(reg))
+	r.Get("/ready", handleReady(cfg))
+	r.Handle("/metrics", promhttp.Handler())
 	r.Post("/tool", handleTool(reg, cfg))
 	r.Post("/plan", handlePlan(reg, cfg))
 	r.Post("/ask", handleAsk(reg, cfg))
@@ -57,7 +104,7 @@ func newRouterWithConfig(reg *registry.Registry, cfg config.Config) http.Handler
 // handleHealth melaporkan liveness proses dan tool yang terdaftar.
 //
 // Ini liveness, BUKAN readiness: status "ok" tidak berarti downstream bisa
-// dihubungi. Readiness per-dependensi dikerjakan di Phase 4.
+// dihubungi. Gunakan /ready untuk pengecekan dependency.
 func handleHealth(reg *registry.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		tools := reg.List()
@@ -69,6 +116,89 @@ func handleHealth(reg *registry.Registry) http.HandlerFunc {
 			"tools":  tools,
 		})
 	}
+}
+
+// handleReady melaporkan status kesiapan gateway beserta pengecekan
+// ketersediaan dependency (ArXiv, Evaluator, RAG).
+//
+// Probes run concurrently with an individual deadline. Running them
+// sequentially under one shared context made the last dependency look down
+// whenever an earlier probe consumed the whole readiness budget.
+func handleReady(cfg config.Config) http.HandlerFunc {
+	type dependency struct {
+		name   string
+		apiURL string
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+
+		dependencies := []dependency{
+			{"arxiv", cfg.Arxiv.BaseURL},
+			{"evaluator", cfg.Evaluator.BaseURL},
+			{"rag", cfg.RAG.BaseURL},
+		}
+
+		checks := make(map[string]string, len(dependencies))
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		for _, dep := range dependencies {
+			dep := dep
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
+				defer probeCancel()
+				status := checkService(probeCtx, dep.apiURL)
+				mu.Lock()
+				checks[dep.name] = status
+				mu.Unlock()
+			}()
+		}
+		wg.Wait()
+
+		allReady := true
+		for _, status := range checks {
+			if status != "up" {
+				allReady = false
+				break
+			}
+		}
+
+		status := http.StatusOK
+		if !allReady {
+			status = http.StatusServiceUnavailable
+		}
+
+		writeJSON(w, status, map[string]interface{}{
+			"status": func() string {
+				if allReady {
+					return "ready"
+				}
+				return "degraded"
+			}(),
+			"check":    "readiness",
+			"services": checks,
+		})
+	}
+}
+
+func checkService(ctx context.Context, baseURL string) string {
+	endpoint := strings.TrimRight(baseURL, "/") + "/health"
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return "down"
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "down"
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return "up"
+	}
+	return "degraded"
 }
 
 // handleTool adalah passthrough mentah ke registry.

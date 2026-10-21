@@ -1,10 +1,10 @@
 # MCP Gateway — Project Goals & Integration Spec
 
 > **Repo:** `mcp-gateway`  
-> **Status:** Cross-repo ownership and source contracts are recorded in [`docs/workspace-alignment.md`](docs/workspace-alignment.md). ArXiv is the first integration path; evidence normalization, evaluator semantics, explicit backend selection, and shared deployment still have release gates.  
-> **Last Updated:** 2026-10-15
+> **Status:** Cross-repo ownership and source contracts are recorded in [`docs/workspace-alignment.md`](docs/workspace-alignment.md). Both answer backends (`arxiv` and `research_rag`) are wired, evidence is normalized per backend, and the workspace root compose supplies the shared deployment. Remaining release gates are operational verification, downstream trace propagation, and the legacy retrieval-tool mismatch.
+> **Last Updated:** 2026-10-22
 
-> **Evidence note:** This document defines the intended direction. It is not a claim that the four repositories currently deploy or operate as one system. In particular, the gateway's retrieval URL and response shape do not currently match `rag-research`, and this repository has no Compose file for the complete stack.
+> **Evidence note:** This document defines the intended direction. Source-level integration is implemented and covered by Go tests; container/monitoring/smoke verification is tracked separately. The legacy `retrieve_chunks` adapter still targets a `/retrieve` endpoint that `rag-research` does not expose, so it remains excluded from `/ask` and `/plan`.
 
 ---
 
@@ -100,17 +100,17 @@ Validate requests and tool parameters, cap `top_k` and input size, and return us
 
 These are source-level integration mismatches, not benchmark results:
 
-1. `mcp-gateway/internal/tools/retrieve_chunks.go` calls `POST /retrieve` on port `8003` and expects `results`; this does not match the RAG answer API and is not used by active `/ask` or `/plan` flows.
-2. `rag-research` currently serves `POST /generate` on port `8000`; its response has `answer` and `retrieved_chunks`, along with confidence and abstention fields.
-3. The gateway has no deployment definition joining the services. ArXiv infra Compose does not start the ArXiv Go/ML apps, RAG Compose has its own network, and evaluator/Ollama wiring is separate.
+1. `mcp-gateway/internal/tools/retrieve_chunks.go` calls `POST /retrieve` using the configured `RAG_SERVICE_URL` (default `:8000`). `rag-research` does not expose `/retrieve`, so the tool remains a low-level `/tool` passthrough and is excluded from `/ask` and `/plan`.
+2. `rag-research` serves `POST /generate` on port `8000`; the `research_rag` adapter normalizes its `answer` and `retrieved_chunks` and preserves confidence/abstention fields.
+3. The workspace root compose joins the four repositories on one network and supplies `ARXIV_SERVICE_URL`, `EVAL_SERVICE_URL`, `RAG_SERVICE_URL`, and `OLLAMA_HOST`. This repository itself still has no Compose file.
 4. Active `/ask` and `/plan` use backend-scoped plans, but legacy `planner.MakePlan` and `ExecuteWithRetry` remain callable and can mix answer/context if reused.
 5. The legacy executor may use retrieved text as the answer; keep it out of public answer flows and remove or constrain that path.
-6. The active executor does not normalize ArXiv `sources[]` into public `evidence[]`; response provenance is not yet returned.
-7. The evaluator API omits `ground_truth` and evaluator version. Its short-answer code reads missing ground truth; the gateway now skips abstentions and answers shorter than five words, but the evaluator contract still needs correction before those scores can be used.
-8. `ARXIV_SERVICE_URL` and `EVAL_SERVICE_URL` are configurable in the gateway; the legacy RAG adapter remains hard-coded. Container deployments still need correct service URLs, a shared network, and a reachable `OLLAMA_HOST`.
+6. ArXiv `sources[]` and RAG `retrieved_chunks[]` are normalized into public `evidence[]` by typed backend adapters; response provenance is returned.
+7. The evaluator API returns `evaluator_version` and claim counts, and the gateway maps them. `ground_truth` is optional; the online short-answer path uses its conservative fallback when it is absent.
+8. All three downstream base URLs and timeouts are configurable. Container deployments still need a reachable `OLLAMA_HOST` for the evaluator's embeddings.
 9. The gateway request ID is used inside tool execution, but adapters do not yet propagate it as a downstream header.
 
-Resolve these integration gaps before advertising the gateway's closed-loop flow as working end to end.
+Treat the remaining source-level gaps as release gates; runtime verification is separate.
 
 The actionable, phase-by-phase checklist and completion criteria are maintained in [`IMPLEMENTATION_TODO.md`](IMPLEMENTATION_TODO.md). Treat its checked items as source-level implementation status, not proof that a full deployment has been run.
 

@@ -80,6 +80,8 @@ func newTestRegistry() *registry.Registry {
 			Data: map[string]interface{}{
 				"faithfulness_score": 0.86,
 				"failure_mode":       "none",
+				"supported_claims":   3,
+				"total_claims":       4,
 			},
 		}
 	})
