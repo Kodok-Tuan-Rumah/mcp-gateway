@@ -1,6 +1,6 @@
 # MCP Gateway
 
-> Project boundaries and roadmap: [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and [`PROJECT_GOALS.md`](PROJECT_GOALS.md). Implementation checklist: [`IMPLEMENTATION_TODO.md`](IMPLEMENTATION_TODO.md). Next prioritized tasks: [`TODO_BERIKUTNYA.md`](TODO_BERIKUTNYA.md).
+> Project boundaries and roadmap: [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and [`PROJECT_GOALS.md`](PROJECT_GOALS.md). The single active implementation checklist is [`IMPLEMENTATION_TODO.md`](IMPLEMENTATION_TODO.md). `TODO_HARI_INI.md`, `TODO_BERIKUTNYA.md`, and `docs/workspace-alignment.md` are historical notes.
 
 > HTTP orchestration gateway for the AI research workspace.
 > Go API · ArXiv + RAG answer backends · evaluator status/score.
@@ -17,7 +17,7 @@ Intended workspace services:
 
 MCP Gateway is a thin orchestration layer across the four-repository workspace. Both answer backends are wired: `arxiv` (`POST /query`) and `research_rag` (`POST /generate`). Answer, evidence, and the evaluator context are all taken from the selected backend, so evidence never crosses backends. The workspace root compose starts the four repositories and their shared infrastructure together.
 
-The gateway routes and reports; retrieval and generation remain owned by the backend repositories. See the project direction documents linked above.
+The gateway routes and reports; retrieval and generation remain owned by the backend repositories. Root Compose defines the combined topology, but that definition alone is not proof of a currently healthy deployment. See the active roadmap for runtime verification gates.
 
 Jawaban pendek tetap dikirim ke evaluator. Untuk request online tanpa
 `ground_truth`, evaluator memakai exact match konservatif terhadap context

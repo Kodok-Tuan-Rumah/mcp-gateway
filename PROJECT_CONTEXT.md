@@ -51,13 +51,13 @@ The active answer path is wired end to end at source level:
 * Evaluation result maps `evaluation_status`, score, failure mode, evaluator version, `supported_claims`, and `total_claims`. An evaluator outage remains `unavailable`; it is never converted to score 0.
 * `retrieve_chunks` is still a low-level `/tool` passthrough. It uses the configured `RAG_SERVICE_URL` (default `:8000`) and calls `POST /retrieve`, an endpoint `rag-research` does not expose; it is deliberately excluded from `/ask` and `/plan`.
 * All three downstream base URLs and timeouts are configurable. The workspace root compose supplies `ARXIV_SERVICE_URL`, `EVAL_SERVICE_URL`, `RAG_SERVICE_URL`, and `OLLAMA_HOST`; this repository itself still has no Compose file.
-* The legacy `MakePlan`/`ExecuteWithRetry` path still exists for callers, but public answer routes use backend-scoped plans and never include `retrieve_chunks`.
+* Public `/ask` and `/plan` use backend-scoped plans. The legacy `retrieve_chunks` tool remains registered for low-level `/tool` calls, but its `/retrieve` contract is unavailable and it is excluded from answer routes.
 
 Runtime verification (containers, monitoring targets, and smoke test) is tracked separately from these source-level statements.
 
 ## RECOMMENDED FIRST RELEASE
 
-1. Complete ArXiv as the first gateway vertical slice because its current `/query` response already returns an answer and source passages; add `rag-research` as a separate explicit backend for general research documents.
+1. Keep ArXiv and `research_rag` as separate, explicitly selected backends. Source-level adapters exist for both; root Compose/runtime acceptance remains a separate verification gate.
 2. Normalize backend results to `answer + evidence[] + backend + decision + failure_type + model/latency when available`.
 3. Pass the same answer and evidence into the evaluator; include source/chunk identifiers and evaluator version when available.
 4. Return the backend answer even if optional evaluation or persistence is unavailable, but make those states explicit.

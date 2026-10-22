@@ -1,4 +1,10 @@
-# Workspace Contract Alignment — Phase 0
+# Workspace Contract Alignment — Phase 0 (Historical Snapshot)
+
+> Catatan ini merekam alignment desain pada 2026-10-15. Checklist dan rekomendasi
+> di bawah bukan status implementasi terbaru. Untuk kondisi source saat ini, lihat
+> [`../PROJECT_CONTEXT.md`](../PROJECT_CONTEXT.md) dan roadmap aktif
+> [`../IMPLEMENTATION_TODO.md`](../IMPLEMENTATION_TODO.md). Sejak snapshot ini,
+> adapter `research_rag` dan `/ready` telah ditambahkan.
 
 > **Review date:** 2026-10-15  
 > **Scope:** source and deployment definitions in `arxiv-research-assistant`, `rag-research`, `llm-eval-framework`, and `mcp-gateway`.  

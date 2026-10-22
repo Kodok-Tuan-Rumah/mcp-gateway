@@ -8,7 +8,7 @@ flowchart TD
         ROUTER["HTTP Router · chi"]
         REGISTRY["Tool Registry"]
         PLANNER["Planner / Executor"]
-        GROQ["Groq Orchestrator\nllama-3.3-70b"]
+        GROQ["Optional Groq Planner\nmodel configured by GROQ_MODEL"]
         LOGGER["Structured Logger · trace ID"]
     end
 
@@ -34,10 +34,10 @@ flowchart TD
     PLANNER --> REGISTRY
     REGISTRY -->|"search_arxiv"| ARXIV
     REGISTRY -->|"evaluate_answer"| EVAL
-    REGISTRY -->|"retrieve_chunks"| RAG
+    REGISTRY -->|"research_rag · POST /generate"| RAG
     ARXIV <--> QDRANT
     ARXIV <--> OLLAMA
-    EVAL --> PG
+    LOGGER -->|"valid evaluation records"| PG
     PG --> GRAFANA
     LOGGER -.->|"trace"| REGISTRY
 
@@ -53,3 +53,9 @@ flowchart TD
     class PG,QDRANT,OLLAMA,GRAFANA infra
     class USER user
 ```
+
+`retrieve_chunks` remains registered for low-level `/tool` visibility, but its
+downstream `/retrieve` route is not provided by `rag-research`; it is excluded
+from `/ask` and `/plan`. The evaluator does not write to PostgreSQL directly;
+the gateway persists valid evaluation records asynchronously. This diagram
+describes source-level wiring, not a live deployment status.

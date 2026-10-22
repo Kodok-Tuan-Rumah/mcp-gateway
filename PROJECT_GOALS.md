@@ -1,10 +1,10 @@
 # MCP Gateway — Project Goals & Integration Spec
 
 > **Repo:** `mcp-gateway`  
-> **Status:** Cross-repo ownership and source contracts are recorded in [`docs/workspace-alignment.md`](docs/workspace-alignment.md). Both answer backends (`arxiv` and `research_rag`) are wired, evidence is normalized per backend, and the workspace root compose supplies the shared deployment. Remaining release gates are operational verification, downstream trace propagation, and the legacy retrieval-tool mismatch.
+> **Status (source snapshot 2026-10-22):** Both answer backends (`arxiv` and `research_rag`) are wired and evidence is normalized per backend. Root Compose defines the shared topology, but full-stack runtime and monitoring verification remain separate release gates. Other open gates include downstream trace propagation, `/tool` security, and retiring or repairing the legacy retrieval tool.
 > **Last Updated:** 2026-10-22
 
-> **Evidence note:** This document defines the intended direction. Source-level integration is implemented and covered by Go tests; container/monitoring/smoke verification is tracked separately. The legacy `retrieve_chunks` adapter still targets a `/retrieve` endpoint that `rag-research` does not expose, so it remains excluded from `/ask` and `/plan`.
+> **Evidence note:** Source-level integration is implemented and has Go contract coverage; container/monitoring/smoke verification is tracked separately. The legacy `retrieve_chunks` adapter still targets a `/retrieve` endpoint that `rag-research` does not expose, so it remains excluded from `/ask` and `/plan`.
 
 ---
 
@@ -98,17 +98,16 @@ Validate requests and tool parameters, cap `top_k` and input size, and return us
 
 ## 4. Current Integration Gaps to Close
 
-These are source-level integration mismatches, not benchmark results:
+These are current source-level or operational gaps, not benchmark results:
 
 1. `mcp-gateway/internal/tools/retrieve_chunks.go` calls `POST /retrieve` using the configured `RAG_SERVICE_URL` (default `:8000`). `rag-research` does not expose `/retrieve`, so the tool remains a low-level `/tool` passthrough and is excluded from `/ask` and `/plan`.
 2. `rag-research` serves `POST /generate` on port `8000`; the `research_rag` adapter normalizes its `answer` and `retrieved_chunks` and preserves confidence/abstention fields.
 3. The workspace root compose joins the four repositories on one network and supplies `ARXIV_SERVICE_URL`, `EVAL_SERVICE_URL`, `RAG_SERVICE_URL`, and `OLLAMA_HOST`. This repository itself still has no Compose file.
-4. Active `/ask` and `/plan` use backend-scoped plans, but legacy `planner.MakePlan` and `ExecuteWithRetry` remain callable and can mix answer/context if reused.
-5. The legacy executor may use retrieved text as the answer; keep it out of public answer flows and remove or constrain that path.
-6. ArXiv `sources[]` and RAG `retrieved_chunks[]` are normalized into public `evidence[]` by typed backend adapters; response provenance is returned.
-7. The evaluator API returns `evaluator_version` and claim counts, and the gateway maps them. `ground_truth` is optional; the online short-answer path uses its conservative fallback when it is absent.
-8. All three downstream base URLs and timeouts are configurable. Container deployments still need a reachable `OLLAMA_HOST` for the evaluator's embeddings.
-9. The gateway request ID is used inside tool execution, but adapters do not yet propagate it as a downstream header.
+4. Gateway request IDs are not yet propagated to downstream service headers, limiting cross-service trace correlation.
+5. ArXiv `sources[]` and RAG `retrieved_chunks[]` are normalized into public `evidence[]` by typed backend adapters; response provenance is returned.
+6. The evaluator API returns `evaluator_version` and claim counts, and the gateway maps them. `ground_truth` is optional; the online short-answer path uses its conservative fallback when absent.
+7. All three downstream base URLs and timeouts are configurable. Container deployments need a reachable `OLLAMA_HOST` for evaluator embeddings.
+8. `/ready` probes all three downstream services. Clarify which dependencies are mandatory for each selected backend because evaluation is optional for answering.
 
 Treat the remaining source-level gaps as release gates; runtime verification is separate.
 
@@ -118,17 +117,17 @@ The actionable, phase-by-phase checklist and completion criteria are maintained 
 
 ## 5. Roadmap — Phase-Gated Work
 
-### Phase 0 — Declare the boundaries
+### Phase 0 — Declare the boundaries (source alignment recorded)
 
 - Keep the four repository responsibilities in Section 2 as the working product map.
-- Decide whether the first gateway release routes to `rag-research`, `arxiv-research-assistant`, or both as separate backend choices.
+- Keep `rag-research` and `arxiv-research-assistant` as separate backend choices; do not merge their evidence implicitly.
 - Keep multi-backend answer synthesis out of the first release.
 - Record source-verified request/response contracts and known deployment assumptions in [`docs/workspace-alignment.md`](docs/workspace-alignment.md).
-- Target explicit client backend selection (`arxiv` or `research_rag`) for the coherent multi-backend release; the current ArXiv default is transitional.
+- Expose explicit client backend selection (`arxiv` or `research_rag`); the current ArXiv default remains transitional.
 
 **Exit gate:** A maintainer can explain which service owns retrieval, generation, evaluation, and orchestration without ambiguous overlap.
 
-### Phase 1 — Make one query path real
+### Phase 1 — Backend contracts and answer paths (source-level implemented)
 
 - Select one backend path and implement its adapter against the actual API schema.
 - Return answer and its originating evidence together; retain abstention and provenance fields.
@@ -137,7 +136,7 @@ The actionable, phase-by-phase checklist and completion criteria are maintained 
 
 **Exit gate:** A request through the gateway returns a schema-valid answer or explicit abstention from the selected backend; downstream failures are visible and do not masquerade as a successful score.
 
-### Phase 2 — Make the workspace reproducible
+### Phase 2 — Make the workspace reproducible (runtime gate open)
 
 - Provide one documented deployment path (root Compose, deployment repository, or explicit per-repo setup).
 - Configure service URLs, Ollama address/model, database DSN, and credentials via environment.
@@ -146,20 +145,20 @@ The actionable, phase-by-phase checklist and completion criteria are maintained 
 
 **Exit gate:** A new developer can start the documented path and verify each service using the documented health endpoints.
 
-### Phase 3 — Reliability and observability
+### Phase 3 — Reliability and observability (partially implemented)
 
-- Add request limits, per-service timeouts, bounded retries, and clear partial-failure behavior.
+- Keep request limits, per-service timeouts, and explicit partial-failure behavior; define a retry policy before enabling retries.
 - Propagate one request/trace ID across gateway and backend logs where supported.
 - Record evaluation version, backend/model, decision, evidence IDs, latency, and failure type; avoid logging secrets and consider query privacy.
 - Add service-level metrics and dashboards only after metric names and ownership are defined.
 
 **Exit gate:** Failure injection shows bounded response time, a diagnosable failure status, and no false “evaluated successfully” response.
 
-### Phase 4 — Evaluate and expand routing
+### Phase 4 — Evaluate routing and plan future backends
 
 - Define gateway-specific acceptance cases, including backend selection, abstention propagation, evaluator failure, and provenance.
 - Measure end-to-end latency and cost separately from retrieval-only and evaluator-only timings.
-- Add a second backend only when it has a distinct user value and a tested adapter.
+- Both current answer backends have source-level adapters; require runtime acceptance and quality evidence before expanding routing behavior.
 - Consider MCP protocol support as an explicit feature with protocol-level interoperability tests.
 
 **Exit gate:** Routing changes have repeatable acceptance evidence and preserve answer/evidence provenance.

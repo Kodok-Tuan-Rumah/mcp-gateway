@@ -213,6 +213,6 @@ keduanya tidak bisa berasal dari backend berbeda.
 | Tidak ada | Alasan |
 |---|---|
 | `retrieve_chunks` dari jalur jawaban | `rag-research` tidak punya `/retrieve`; `research_rag` menjawab via `/generate` |
-| Auto-retry | Sudah dihapus dari jalur jawaban; masih memakai trigger `score` yang belum valid (Phase 2) |
-| Readiness check | `/health` hanya liveness (Phase 4) |
-| `X-Request-ID` ke downstream | Adapter belum meneruskan header (Phase 3) |
+| Auto-retry | Tidak aktif pada jalur jawaban; kebijakan retry masih perlu keputusan operasional |
+| Readiness check | `/health` adalah liveness; `/ready` memeriksa ArXiv, evaluator, dan RAG. Kebijakan wajib/opsional per backend masih perlu diperjelas |
+| `X-Request-ID` ke downstream | Belum dipropagasikan oleh adapter; termasuk gate observability |

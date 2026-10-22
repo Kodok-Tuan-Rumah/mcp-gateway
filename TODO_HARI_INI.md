@@ -1,4 +1,9 @@
-# Todo Hari Ini — 15 Oktober 2026
+# Catatan Sesi — 15 Oktober 2026 (Arsip)
+
+> Dokumen ini mencatat pekerjaan pada 15 Oktober 2026 dan bukan daftar tugas
+> aktif. Gunakan [`IMPLEMENTATION_TODO.md`](IMPLEMENTATION_TODO.md) untuk status
+> dan prioritas terkini. Beberapa tindak lanjut di bawah sudah diselesaikan;
+> yang belum selesai perlu dinilai ulang sebelum dikerjakan.
 
 ## Target
 
