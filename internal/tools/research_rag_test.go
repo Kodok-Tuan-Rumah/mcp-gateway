@@ -43,7 +43,10 @@ func TestResearchRAG_ContractSuccess(t *testing.T) {
 			"confidence": 0.85,
 			"decision": "GENERATE",
 			"generator_status": "GENERATE",
-			"generator_confidence": 0.85
+			"generator_confidence": 0.85,
+			"reflection_passed": true,
+			"reflection_score": 0.9,
+			"unsupported_claims_count": 0
 		}`))
 	}))
 	defer downstream.Close()
@@ -65,8 +68,17 @@ func TestResearchRAG_ContractSuccess(t *testing.T) {
 	if got.Query != "what is retrieval" || got.TopK != 7 || !got.UseReranker {
 		t.Errorf("downstream request = %+v", got)
 	}
-	if _, ok := resp.TypedResult.(ResearchRAGResponse); !ok {
+	typed, ok := resp.TypedResult.(ResearchRAGResponse)
+	if !ok {
 		t.Fatalf("TypedResult has type %T, want ResearchRAGResponse", resp.TypedResult)
+	}
+	if typed.ReflectionPassed == nil || !*typed.ReflectionPassed ||
+		typed.ReflectionScore == nil || *typed.ReflectionScore != 0.9 ||
+		typed.UnsupportedClaimsCount == nil || *typed.UnsupportedClaimsCount != 0 {
+		t.Errorf("reflection metadata not preserved: %+v", typed)
+	}
+	if resp.Data["unsupported_claims_count"] != 0 || resp.Data["reflection_passed"] != true {
+		t.Errorf("reflection metadata missing from tool data: %#v", resp.Data)
 	}
 	if resp.Data["answer"] != "Supported answer" || resp.Data["model"] != "phi3:mini" {
 		t.Errorf("unexpected tool data: %#v", resp.Data)
@@ -180,6 +192,10 @@ func TestResearchRAG_IsAbstention(t *testing.T) {
 	genAbstainFailure := ResearchRAGResponse{Decision: "GENERATE", FailureType: api.FailureInsufficientContext}
 	if !genAbstainFailure.IsAbstention() {
 		t.Errorf("GENERATE + failure_type insufficient_context should be abstention")
+	}
+	genUnsupportedClaims := ResearchRAGResponse{Decision: "GENERATE", FailureType: api.FailureUnsupportedClaims}
+	if !genUnsupportedClaims.IsAbstention() {
+		t.Errorf("GENERATE + failure_type unsupported_claims should be abstention")
 	}
 	genAbstainSentinel := ResearchRAGResponse{Decision: "GENERATE", Answer: api.RAGAbstainText}
 	if !genAbstainSentinel.IsAbstention() {

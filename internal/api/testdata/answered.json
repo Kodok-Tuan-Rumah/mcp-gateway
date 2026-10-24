@@ -29,5 +29,5 @@
     "total_claims": 3
   },
   "query": "apa itu RAG?",
-  "orchestrator": "groq"
+  "orchestrator": "rule-based"
 }

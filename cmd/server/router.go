@@ -20,7 +20,6 @@ import (
 
 	"github.com/malikimayzar/mcp-gateway/internal/api"
 	"github.com/malikimayzar/mcp-gateway/internal/config"
-	"github.com/malikimayzar/mcp-gateway/internal/orchestrator"
 	"github.com/malikimayzar/mcp-gateway/internal/planner"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
@@ -118,12 +117,13 @@ func handleHealth(reg *registry.Registry) http.HandlerFunc {
 	}
 }
 
-// handleReady melaporkan status kesiapan gateway beserta pengecekan
-// ketersediaan dependency (ArXiv, Evaluator, RAG).
+// handleReady melaporkan kesiapan tiap backend dan status evaluator.
 //
 // Probes run concurrently with an individual deadline. Running them
 // sequentially under one shared context made the last dependency look down
-// whenever an earlier probe consumed the whole readiness budget.
+// whenever an earlier probe consumed the whole readiness budget. Evaluator
+// availability is optional for answering; at least one answer backend must
+// be reachable for this endpoint to return HTTP 200.
 func handleReady(cfg config.Config) http.HandlerFunc {
 	type dependency struct {
 		name   string
@@ -158,28 +158,36 @@ func handleReady(cfg config.Config) http.HandlerFunc {
 		}
 		wg.Wait()
 
-		allReady := true
+		allServicesUp := true
 		for _, status := range checks {
 			if status != "up" {
-				allReady = false
+				allServicesUp = false
 				break
 			}
 		}
+		arxivReady := checks["arxiv"] == "up"
+		ragReady := checks["rag"] == "up"
+		answersReady := arxivReady || ragReady
 
 		status := http.StatusOK
-		if !allReady {
+		if !answersReady {
 			status = http.StatusServiceUnavailable
 		}
 
 		writeJSON(w, status, map[string]interface{}{
 			"status": func() string {
-				if allReady {
+				if allServicesUp {
 					return "ready"
 				}
 				return "degraded"
 			}(),
-			"check":    "readiness",
+			"check": "readiness",
 			"services": checks,
+			"capabilities": map[string]bool{
+				"answers":       answersReady,
+				"arxiv":         arxivReady,
+				"research_rag":  ragReady,
+			},
 		})
 	}
 }
@@ -247,8 +255,19 @@ func isClientFault(msg string) bool {
 		strings.HasPrefix(msg, "param ")
 }
 
-// handlePlan menjalankan plan deterministik untuk backend terpilih.
+// handlePlan adalah alias kompatibilitas untuk endpoint eksekusi /ask.
 func handlePlan(reg *registry.Registry, cfg config.Config) http.HandlerFunc {
+	return handleBackendRequest(reg, cfg)
+}
+
+// handleAsk menjalankan satu plan deterministik untuk backend terpilih.
+func handleAsk(reg *registry.Registry, cfg config.Config) http.HandlerFunc {
+	return handleBackendRequest(reg, cfg)
+}
+
+// handleBackendRequest membagikan validasi, rencana, dan eksekusi yang sama
+// pada /ask dan /plan agar kedua endpoint memiliki perilaku yang konsisten.
+func handleBackendRequest(reg *registry.Registry, cfg config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
 		askReq, ok := decodeAskRequest(w, req)
 		if !ok {
@@ -271,59 +290,7 @@ func handlePlan(reg *registry.Registry, cfg config.Config) http.HandlerFunc {
 	}
 }
 
-// handleAsk mencoba orkestrasi LLM lebih dulu, lalu jatuh ke plan deterministik.
-//
-// Groq tidak memilih backend: langkah yang tool-nya bukan milik backend
-// terpilih dibuang, dan bila tidak ada langkah pembawa jawaban tersisa, plan
-// deterministik yang dipakai.
-func handleAsk(reg *registry.Registry, cfg config.Config) http.HandlerFunc {
-	return func(w http.ResponseWriter, req *http.Request) {
-		askReq, ok := decodeAskRequest(w, req)
-		if !ok {
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(req.Context(), cfg.RequestTimeout)
-		defer cancel()
-
-		start := time.Now()
-		result, used := runWithGroq(ctx, reg, *askReq, requestID(req), cfg.GroqAPIKey, cfg.GroqModel)
-		elapsed := time.Since(start)
-
-		resp := toResponse(*askReq, requestID(req), used, result)
-		respond(w, req, resp)
-		logEval(req, resp, elapsed, cfg.StoreLogTimeout)
-	}
-}
-
-// runWithGroq menjalankan plan dari LLM, dengan fallback ke plan deterministik
-// bila Groq gagal atau menghasilkan plan yang tidak bisa dipakai.
-func runWithGroq(ctx context.Context, reg *registry.Registry, askReq api.AskRequest, traceID, groqAPIKey, groqModel string) (planner.ExecutionResult, string) {
-	orcPlan, err := orchestrator.GeneratePlan(ctx, askReq.Query, groqAPIKey, groqModel)
-	if err != nil {
-		log.Printf("[ask] Groq gagal (%v), fallback ke plan deterministik", err)
-		plan := planForBackend(askReq)
-		plan.TraceID = traceID
-		return planner.Execute(ctx, reg, plan), orchestratorRuleBased
-	}
-
-	plan := planFromGroq(orcPlan, askReq)
-	if len(plan.Steps) == 0 {
-		log.Printf("[ask] plan Groq tidak punya langkah valid untuk backend %s, fallback", askReq.Backend)
-		fallback := planForBackend(askReq)
-		fallback.TraceID = traceID
-		return planner.Execute(ctx, reg, fallback), orchestratorRuleBased
-	}
-
-	plan.TraceID = traceID
-	log.Printf("[ask] memakai plan Groq (%d langkah, backend %s)", len(plan.Steps), askReq.Backend)
-	return planner.Execute(ctx, reg, plan), orchestratorGroq
-}
-
-const (
-	orchestratorGroq      = "groq"
-	orchestratorRuleBased = "rule-based"
-)
+const orchestratorRuleBased = "rule-based"
 
 // ────────────────────────── request / response ──────────────────────────
 

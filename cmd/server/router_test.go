@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/malikimayzar/mcp-gateway/internal/api"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 )
 
@@ -24,8 +25,8 @@ func TestHealth(t *testing.T) {
 		t.Errorf("expected status=ok, got %v", body["status"])
 	}
 	tools, ok := body["tools"].([]interface{})
-	if !ok || len(tools) != 4 {
-		t.Fatalf("expected 4 tools, got %v", body["tools"])
+	if !ok || len(tools) != 3 {
+		t.Fatalf("expected 3 supported tools, got %v", body["tools"])
 	}
 }
 
@@ -66,7 +67,7 @@ func TestHealth_IsLivenessNotReadiness(t *testing.T) {
 		t.Errorf("expected check=liveness, got %v", body["check"])
 	}
 	if has(body, "ready") {
-		t.Error("readiness check belum ada — jangan sampai diklaim ada")
+		t.Error("liveness response must not claim readiness")
 	}
 }
 
@@ -390,13 +391,11 @@ func TestPlan_EvaluationIsActuallyWired(t *testing.T) {
 	}
 }
 
-// Plan hanya boleh menyentuh satu backend. Query dengan kata "research"/"study"
-// dulu memicu search_arxiv dan retrieve_chunks sekaligus, lalu answer ArXiv
-// dinilai terhadap chunk RAG.
+// A request executes the selected backend tool followed by evaluation.
 func TestPlan_UsesOnlyOneBackend(t *testing.T) {
 	var called []string
 	reg := registry.New()
-	for _, name := range []string{toolSearchArxiv, toolRetrieveChunks, toolEvaluateAnswer} {
+	for _, name := range []string{toolSearchArxiv, toolEvaluateAnswer} {
 		n := name
 		reg.Register(n, func(_ context.Context, req registry.ToolRequest) registry.ToolResponse {
 			called = append(called, n)
@@ -422,13 +421,8 @@ func TestPlan_UsesOnlyOneBackend(t *testing.T) {
 		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
 	}
 
-	for _, c := range called {
-		if c == toolRetrieveChunks {
-			t.Errorf("retrieve_chunks tidak boleh dipanggil di jalur jawaban; calls=%v", called)
-		}
-	}
-	if len(called) == 0 {
-		t.Error("tidak ada tool yang dipanggil — test ini tidak membuktikan apa pun")
+	if len(called) != 2 || called[0] != toolSearchArxiv || called[1] != toolEvaluateAnswer {
+		t.Errorf("calls = %v, want selected backend then evaluator", called)
 	}
 }
 
@@ -620,23 +614,22 @@ func TestPlan_AppliesDefaults(t *testing.T) {
 	}
 }
 
-// Hanya search_arxiv boleh dipanggil lewat /plan. RetrieveChunks dan
-// EvaluateAnswer tetap bisa dipanggil langsung lewat /tool.
-func TestTool_RetrieveChunksDirectly(t *testing.T) {
+// The retired retrieve_chunks adapter is not exposed through /tool.
+func TestTool_RetiredRetrieveChunksIsNotRegistered(t *testing.T) {
 	ts := newTestServer(newTestRegistry())
 	defer ts.Close()
 
 	resp := postJSON(t, ts, "/tool", map[string]interface{}{
-		"tool_name": toolRetrieveChunks,
+		"tool_name": "retrieve_chunks",
 		"params":    map[string]interface{}{"query": "attention mechanism", "top_k": 3},
 	})
 	body := decodeJSON(t, resp)
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%v)", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for retired tool, got %d (%v)", resp.StatusCode, body)
 	}
-	if body["success"] != true {
-		t.Errorf("expected success=true, got %v", body["success"])
+	if body["success"] != false {
+		t.Errorf("expected success=false, got %v", body["success"])
 	}
 }
 
@@ -664,10 +657,8 @@ func TestTool_EvaluateAnswerDirectly(t *testing.T) {
 
 // ──────────────────────────────── /ask ────────────────────────────────
 
-// Tanpa GROQ_API_KEY, /ask harus jatuh ke plan deterministik dan tetap
-// memenuhi kontrak yang sama dengan /plan.
-func TestAsk_FallsBackWithoutGroq(t *testing.T) {
-	t.Setenv("GROQ_API_KEY", "")
+// /ask executes the deterministic backend plan.
+func TestAsk_UsesDeterministicPlan(t *testing.T) {
 	ts := newTestServer(newTestRegistry())
 	defer ts.Close()
 
@@ -691,19 +682,38 @@ func TestAsk_FallsBackWithoutGroq(t *testing.T) {
 	}
 }
 
-func TestAsk_ReturnsSameContractAsPlan(t *testing.T) {
-	t.Setenv("GROQ_API_KEY", "")
+func TestAskAndPlan_UseSameExecutionFlow(t *testing.T) {
 	ts := newTestServer(newTestRegistry())
 	defer ts.Close()
 
-	body := decodeJSON(t, postJSON(t, ts, "/ask", map[string]interface{}{"query": "apa itu RAG?"}))
+	for _, route := range []string{"/ask", "/plan"} {
+		t.Run(route, func(t *testing.T) {
+			body := decodeJSON(t, postJSON(t, ts, route, map[string]interface{}{
+				"backend": api.BackendResearchRAG,
+				"query":   "apa itu RAG?",
+			}))
 
-	for _, k := range []string{
-		"request_id", "answer", "backend", "decision", "failure_type", "evaluation_status",
-	} {
-		if !has(body, k) {
-			t.Errorf("field %q wajib ada; dapat: %v", k, keys(body))
-		}
+			for _, key := range []string{
+				"request_id", "answer", "backend", "decision", "failure_type", "evaluation_status",
+			} {
+				if !has(body, key) {
+					t.Errorf("field %q wajib ada; dapat: %v", key, keys(body))
+				}
+			}
+			if body["backend"] != api.BackendResearchRAG || body["orchestrator"] != "rule-based" {
+				t.Errorf("unexpected route result: backend=%v orchestrator=%v", body["backend"], body["orchestrator"])
+			}
+			if body["answer"] != "RAG adalah sistem yang menggabungkan retrieval dengan generation." {
+				t.Errorf("answer = %v", body["answer"])
+			}
+			if body["evaluation_status"] != "completed" {
+				t.Errorf("evaluation_status = %v", body["evaluation_status"])
+			}
+			steps, ok := body["steps"].([]interface{})
+			if !ok || len(steps) != 2 {
+				t.Fatalf("steps = %#v, want answer plus evaluator", body["steps"])
+			}
+		})
 	}
 }
 

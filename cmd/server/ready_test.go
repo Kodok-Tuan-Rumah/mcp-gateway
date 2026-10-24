@@ -21,22 +21,30 @@ func readyRouter(t *testing.T, arxivURL, evaluatorURL, ragURL string) *httptest.
 	return httptest.NewServer(newRouterWithConfig(newTestRegistry(), cfg))
 }
 
-func healthyService(t *testing.T) *httptest.Server {
+func serviceWithHealthStatus(t *testing.T, status int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/health" {
 			t.Errorf("unexpected readiness path: %s", r.URL.Path)
 		}
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(status)
 	}))
 }
 
+func unavailableServiceURL(t *testing.T) string {
+	t.Helper()
+	server := serviceWithHealthStatus(t, http.StatusOK)
+	url := server.URL
+	server.Close()
+	return url
+}
+
 func TestReady_AllDependenciesUp(t *testing.T) {
-	arxiv := healthyService(t)
+	arxiv := serviceWithHealthStatus(t, http.StatusOK)
 	defer arxiv.Close()
-	evaluator := healthyService(t)
+	evaluator := serviceWithHealthStatus(t, http.StatusOK)
 	defer evaluator.Close()
-	rag := healthyService(t)
+	rag := serviceWithHealthStatus(t, http.StatusOK)
 	defer rag.Close()
 
 	ts := readyRouter(t, arxiv.URL, evaluator.URL, rag.URL)
@@ -60,37 +68,91 @@ func TestReady_AllDependenciesUp(t *testing.T) {
 			t.Errorf("expected %s=up, got %v", name, services[name])
 		}
 	}
+	capabilities, ok := body["capabilities"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("capabilities must be an object, got %T", body["capabilities"])
+	}
+	for _, name := range []string{"answers", "arxiv", "research_rag"} {
+		if capabilities[name] != true {
+			t.Errorf("expected capability %s=true, got %v", name, capabilities[name])
+		}
+	}
 }
 
-func TestReady_DegradedAndDown(t *testing.T) {
-	arxiv := healthyService(t)
+func TestReady_EvaluatorUnavailableDoesNotBlockAnswers(t *testing.T) {
+	arxiv := serviceWithHealthStatus(t, http.StatusOK)
 	defer arxiv.Close()
-	evaluator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
+	evaluator := serviceWithHealthStatus(t, http.StatusServiceUnavailable)
 	defer evaluator.Close()
+	rag := serviceWithHealthStatus(t, http.StatusOK)
+	defer rag.Close()
 
-	// Port 1 is closed; the probe should report down instead of blocking.
-	ts := readyRouter(t, arxiv.URL, evaluator.URL, "http://127.0.0.1:1")
+	ts := readyRouter(t, arxiv.URL, evaluator.URL, rag.URL)
 	defer ts.Close()
 
 	resp := get(t, ts, "/ready")
 	body := decodeJSON(t, resp)
 
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d: %v", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 while answer backends are up, got %d: %v", resp.StatusCode, body)
 	}
 	if body["status"] != "degraded" {
 		t.Errorf("expected status=degraded, got %v", body["status"])
 	}
 	services := body["services"].(map[string]interface{})
-	if services["arxiv"] != "up" {
-		t.Errorf("arxiv should still be up, got %v", services["arxiv"])
-	}
 	if services["evaluator"] != "degraded" {
 		t.Errorf("expected evaluator=degraded, got %v", services["evaluator"])
 	}
-	if services["rag"] != "down" {
-		t.Errorf("expected rag=down, got %v", services["rag"])
+	capabilities := body["capabilities"].(map[string]interface{})
+	if capabilities["answers"] != true {
+		t.Errorf("answers must remain ready when evaluation is down, got %v", capabilities["answers"])
+	}
+}
+
+func TestReady_OneAnswerBackendDownStillServesOther(t *testing.T) {
+	evaluator := serviceWithHealthStatus(t, http.StatusOK)
+	defer evaluator.Close()
+	rag := serviceWithHealthStatus(t, http.StatusOK)
+	defer rag.Close()
+
+	ts := readyRouter(t, unavailableServiceURL(t), evaluator.URL, rag.URL)
+	defer ts.Close()
+
+	resp := get(t, ts, "/ready")
+	body := decodeJSON(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 while RAG is available, got %d: %v", resp.StatusCode, body)
+	}
+	if body["status"] != "degraded" {
+		t.Errorf("expected status=degraded, got %v", body["status"])
+	}
+	services := body["services"].(map[string]interface{})
+	if services["arxiv"] != "down" || services["rag"] != "up" {
+		t.Errorf("unexpected service status: %v", services)
+	}
+	capabilities := body["capabilities"].(map[string]interface{})
+	if capabilities["answers"] != true || capabilities["arxiv"] != false || capabilities["research_rag"] != true {
+		t.Errorf("unexpected capability status: %v", capabilities)
+	}
+}
+
+func TestReady_NoAnswerBackendAvailableReturns503(t *testing.T) {
+	evaluator := serviceWithHealthStatus(t, http.StatusOK)
+	defer evaluator.Close()
+
+	ts := readyRouter(t, unavailableServiceURL(t), evaluator.URL, unavailableServiceURL(t))
+	defer ts.Close()
+
+	resp := get(t, ts, "/ready")
+	body := decodeJSON(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when both answer backends are down, got %d: %v", resp.StatusCode, body)
+	}
+	if body["status"] != "degraded" {
+		t.Errorf("expected status=degraded, got %v", body["status"])
+	}
+	capabilities := body["capabilities"].(map[string]interface{})
+	if capabilities["answers"] != false {
+		t.Errorf("answers must be false, got %v", capabilities["answers"])
 	}
 }

@@ -23,7 +23,7 @@ Agree on who owns each capability and on the request/response seams before addin
 | Faithfulness and robustness evaluation | `llm-eval-framework` | Optionally submit one backend's answer and its own evidence; report evaluator availability separately |
 | Public entry point, backend selection, normalization, tracing, failure mapping | `mcp-gateway` | Route one request to one answer backend; never merge backend answers or evidence in v1 |
 
-These boundaries follow [`../WORKSPACE_DIRECTION.md`](../WORKSPACE_DIRECTION.md). The target contract requires explicit client selection between `arxiv` and `research_rag`; the current gateway default of `arxiv` is transitional and must be removed before the coherent two-backend release.
+These boundaries follow [`../WORKSPACE_DIRECTION.md`](../WORKSPACE_DIRECTION.md). The gateway supports explicit selection between `arxiv` and `research_rag`; for compatibility, omitted `backend` still defaults to `arxiv`, though clients should select explicitly.
 
 ## Source-verified service contracts
 
@@ -42,7 +42,7 @@ These boundaries follow [`../WORKSPACE_DIRECTION.md`](../WORKSPACE_DIRECTION.md)
 - Request: `query` (3–1000 chars), optional `top_k` (1–20), optional `use_reranker` (default false).
 - Response includes `answer`, `retrieved_chunks[{chunk_id, doc_id, text, score, metadata, ranking_mode}]`, retrieval/generation/total latency, `model`, confidence, retry information, `decision`, `failure_type`, and abstention metadata.
 - `decision` values include `REJECT`, `PARTIAL_TRUST`, and `GENERATE`. A response can also abstain after generation via `generator_status=INSUFFICIENT_CONTEXT`; adapter mapping must inspect both fields rather than treating every HTTP 200 as an answer.
-- The current gateway `retrieve_chunks` adapter uses `RAG_SERVICE_URL` (default port `8000`) and calls `POST /retrieve`, which this API does not expose. It is not an adapter for `/generate` and must stay out of `/ask` and `/plan`; the `research_rag` tool is the answer adapter.
+- At the time of this review, a `retrieve_chunks` adapter called `POST /retrieve`, which this API does not expose. That adapter has since been removed; `research_rag` is the supported answer adapter through `/generate`.
 
 ### Evaluation Framework
 
@@ -63,7 +63,7 @@ client chooses backend
   → response returns request ID, backend decision, evidence, and evaluation status
 ```
 
-The first integration vertical slice remains ArXiv because its `/query` response already contains an answer and sources. RAG is a distinct subsequent adapter using `/generate`. Do not use RAG retrieval chunks as context for an ArXiv answer.
+The first integration vertical slice was ArXiv because its `/query` response already contained an answer and sources. RAG is now wired as a separate adapter using `/generate`. Do not use RAG retrieval chunks as context for an ArXiv answer.
 
 ## Deployment alignment
 

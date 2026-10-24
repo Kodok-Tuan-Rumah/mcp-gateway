@@ -66,6 +66,9 @@ func evaluateAnswer(ctx context.Context, req registry.ToolRequest, service confi
 		return errorResponse(req, fmt.Sprintf("failed to build request: %v", err))
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if req.TraceID != "" {
+		httpReq.Header.Set("X-Request-ID", req.TraceID)
+	}
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

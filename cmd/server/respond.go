@@ -33,6 +33,7 @@ func toResponse(req api.AskRequest, requestID, orchestratorName string, result p
 	}
 
 	applyDecision(&resp, result)
+	applyReflectionMetadata(&resp, result)
 	applyEvaluation(&resp, result)
 	return resp
 }
@@ -70,11 +71,43 @@ func applyDecision(resp *api.GatewayResponse, result planner.ExecutionResult) {
 		// Abstensi backend lain (mis. RAG dengan decision == "REJECT")
 		// dipertahankan jawabannya apa adanya.
 		resp.Decision = api.DecisionAbstain
-		resp.FailureType = api.FailureInsufficientContext
+		resp.FailureType = answerFailureType(answerStep)
+		if resp.FailureType == api.FailureNone {
+			resp.FailureType = api.FailureInsufficientContext
+		}
 
 	default:
 		resp.Decision = api.DecisionAnswer
 		resp.FailureType = api.FailureNone
+	}
+}
+
+func answerFailureType(step *planner.StepResult) string {
+	if step == nil || step.Data == nil {
+		return api.FailureNone
+	}
+	if failure, ok := step.Data["failure_type"].(string); ok && failure != "" {
+		return failure
+	}
+	return api.FailureNone
+}
+
+func applyReflectionMetadata(resp *api.GatewayResponse, result planner.ExecutionResult) {
+	step := findAnswerStep(result.Steps, resp.Backend)
+	if step == nil || step.Data == nil {
+		return
+	}
+	if value, ok := step.Data["reflection_passed"].(bool); ok {
+		resp.ReflectionPassed = &value
+	}
+	if value, ok := step.Data["reflection_score"].(float64); ok {
+		resp.ReflectionScore = &value
+	}
+	if value, ok := step.Data["unsupported_claims_count"].(int); ok && value >= 0 {
+		resp.UnsupportedClaimsCount = &value
+	} else if value, ok := step.Data["unsupported_claims_count"].(float64); ok && value >= 0 && value == math.Trunc(value) {
+		count := int(value)
+		resp.UnsupportedClaimsCount = &count
 	}
 }
 

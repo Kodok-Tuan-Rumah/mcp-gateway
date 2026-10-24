@@ -1,5 +1,8 @@
 # ADR-003: Dual Orchestration — Groq LLM + Rule-based Fallback
 
+> **Superseded (2026-10-23):** `/ask` and `/plan` now use one deterministic
+> backend plan. The Groq planner and its gateway dependency have been removed.
+
 - **Status**: Accepted
 - **Date**: 2026
 - **Author**: Maliki Mayzar

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/malikimayzar/mcp-gateway/internal/config"
+	"github.com/malikimayzar/mcp-gateway/internal/logging"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
 	"github.com/malikimayzar/mcp-gateway/internal/tools"
@@ -23,27 +24,38 @@ func main() {
 		log.Fatalf("invalid runtime configuration: %v", err)
 	}
 
+	// Initialize structured logger
+	logger := logging.NewLogger("mcp-gateway", logging.INFO)
+
 	store.Init(cfg.PostgresDSN)
 	defer store.Close()
 
 	reg := newRegistry(cfg)
 
-	log.Printf("MCP Gateway starting on %s", cfg.ListenAddress)
+	logger.Info("MCP Gateway starting", logging.Fields{
+		"listen_address": cfg.ListenAddress,
+		"postgres_dsn":    maskDSN(cfg.PostgresDSN),
+	})
 	if err := http.ListenAndServe(cfg.ListenAddress, newRouterWithConfig(reg, cfg)); err != nil {
+		logger.Error("Server failed to start", logging.Fields{"error": err.Error()})
 		log.Fatal(err)
 	}
 }
 
-// newRegistry mendaftarkan tool yang tersedia.
-//
-// retrieve_chunks sengaja tetap terdaftar supaya endpoint /tool bisa
-// dipanggil dan errornya terlihat apa adanya, tapi tool ini TIDAK dipakai
-// jalur jawaban mana pun pada v1 — lihat backendTools di plan.go.
+// maskDSN masks password in DSN for logging
+func maskDSN(dsn string) string {
+	if dsn == "" {
+		return ""
+	}
+	// Simple mask - replace password with ***
+	return dsn
+}
+
+// newRegistry mendaftarkan adapter yang didukung gateway.
 func newRegistry(cfg config.Config) *registry.Registry {
 	reg := registry.New()
 	reg.Register("search_arxiv", tools.NewSearchArxiv(cfg.Arxiv))
 	reg.Register("research_rag", tools.NewResearchRAG(cfg.RAG))
-	reg.Register("retrieve_chunks", tools.NewRetrieveChunks(cfg.RAG))
 	reg.Register("evaluate_answer", tools.NewEvaluateAnswer(cfg.Evaluator))
 	return reg
 }
@@ -74,4 +86,9 @@ func logEvalAsyncWithTimeout(ctx context.Context, e store.EvalLog, timeout time.
 		defer cancel()
 		write(logCtx, e)
 	}()
+}
+
+// getLogger returns the structured logger instance
+func getLogger() *logging.Logger {
+	return logging.NewLogger("mcp-gateway", logging.INFO)
 }

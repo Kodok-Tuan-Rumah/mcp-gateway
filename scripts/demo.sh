@@ -88,9 +88,9 @@ http_post /plan '{"query":"apa itu RAG?"}'
 note "perhatikan: answer kosong, evaluation_status=skipped, tidak ada key 'evaluation'."
 note "dulu: answer berisi teks chunk dan Score 0. Sekarang keduanya hilang — itu memang jujur."
 
-# ─────────────────────────── /ask fallback ───────────────────────────
-say "POST /ask — tanpa GROQ_API_KEY → fallback rule-based"
-GROQ_API_KEY= curl -s -X POST "$BASE/ask" \
+# ─────────────────────────── /ask ───────────────────────────
+say "POST /ask — alur deterministik yang sama dengan /plan"
+curl -s -X POST "$BASE/ask" \
   -H 'Content-Type: application/json' -d '{"query":"apa itu RAG?"}' | j
 note "orchestrator=rule-based. Kontrak /plan dan /ask sengaja dibuat sama."
 

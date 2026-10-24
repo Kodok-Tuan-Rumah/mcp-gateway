@@ -1,6 +1,6 @@
 # MCP Gateway — Active Roadmap
 
-> **Snapshot:** 2026-10-22. This is the single active implementation checklist.
+> **Snapshot:** 2026-10-23. This is the single active implementation checklist.
 > “Done” below means source-level implementation or recorded local evidence; it
 > does not imply a fresh runtime verification in this session.
 
@@ -12,6 +12,7 @@ historical; use this roadmap for current work.
 ## Completed source-level work
 
 - [x] Define `/ask` and `/plan` contracts and select one answer backend per request.
+- [x] Use one deterministic execution flow for `/ask` and the `/plan` compatibility alias; remove the unused Groq planning dependency.
 - [x] Implement typed ArXiv (`POST /query`) and RAG (`POST /generate`) adapters.
 - [x] Normalize answer, evidence, abstention, model/latency fields, and failure states.
 - [x] Pass the selected backend's evidence context to the optional evaluator.
@@ -24,8 +25,8 @@ historical; use this roadmap for current work.
 - [ ] Run the documented root Compose path from a clean environment and record image build, service health, migrations, volumes, and shutdown behavior.
 - [ ] Verify each Prometheus target and the Grafana dashboard against a live stack; record date and output.
 - [ ] Make the smoke check prove a fresh run wrote its own ArXiv query log (use a unique request/run identifier; do not rely only on a fixed query string).
-- [ ] Define readiness per capability: backend readiness should not be conflated with optional evaluator availability.
-- [ ] Test evaluator readiness after its embedding dependency is initialized, not only process liveness.
+- [x] Define readiness per capability: `/ready` reports each answer backend and returns HTTP 200 if at least one is reachable; evaluator failure is degraded but does not block answers.
+- [ ] Test evaluator readiness after its embedding dependency is initialized, not only process liveness. The gateway currently probes evaluator `/health`; a deeper signal must come from `llm-eval-framework`.
 
 ## P1 — Security, tracing, and operational behavior
 
@@ -34,7 +35,7 @@ historical; use this roadmap for current work.
 - [ ] Replace development fallback credentials for PostgreSQL/Grafana in non-local environments; document secret injection and rotation.
 - [ ] Define whether query, answer, and evidence text may be persisted; document redaction and retention.
 - [ ] Make persistence failures observable without blocking a valid answer or logging sensitive payloads.
-- [ ] Decide whether the legacy `retrieve_chunks` adapter should gain a supported endpoint or be retired. Until then, document it as unavailable and keep it out of answer flows.
+- [x] Retire the legacy `retrieve_chunks` adapter because `rag-research` does not expose its `/retrieve` endpoint; `research_rag` remains the supported adapter through `/generate`.
 
 ## P2 — Quality evidence and release claims
 

@@ -44,7 +44,6 @@ func TestReadme_ReferencesOnlyExistingPaths(t *testing.T) {
 		"cmd/server",
 		"internal", "internal/api", "internal/config", "internal/planner",
 		"internal/registry", "internal/store", "internal/tools",
-		"internal/orchestrator",
 		"scripts", "docs",
 	}
 
@@ -89,14 +88,11 @@ func TestReadme_ReferencesOnlyExistingPaths(t *testing.T) {
 }
 
 // Setiap env var yang didokumentasikan README harus benar-benar dibaca kode.
-// README pernah mencantumkan RAG_SERVICE_URL/EVAL_SERVICE_URL/ARXIV_SERVICE_URL
-// sementara kode hanya membaca GROQ_API_KEY dan POSTGRES_DSN.
+// README should document only runtime settings parsed by gateway config.
 func TestReadme_DocumentsOnlyRealEnvVars(t *testing.T) {
 	content := readme(t)
 
 	known := map[string]struct{}{
-		"GROQ_API_KEY":             {},
-		"GROQ_MODEL":               {},
 		"POSTGRES_DSN":             {},
 		"ARXIV_SERVICE_URL":        {},
 		"EVAL_SERVICE_URL":         {},

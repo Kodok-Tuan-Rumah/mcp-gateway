@@ -118,11 +118,12 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 				result.Evidence = evidenceFromToolData(resp.Data)
 				// Deteksi abstensi sama dengan ResearchRAGResponse.IsAbstention:
 				// decision REJECT (kontrak /ask) atau framing /generate
-				// (sentinel jawaban + failure_type insufficient_context).
+				// (sentinel jawaban + failure_type dari backend).
 				if decision, ok := resp.Data["decision"].(string); ok && decision == "REJECT" {
 					result.Abstained = true
 				}
-				if failure, ok := resp.Data["failure_type"].(string); ok && failure == api.FailureInsufficientContext {
+				if failure, ok := resp.Data["failure_type"].(string); ok &&
+					(failure == api.FailureInsufficientContext || failure == api.FailureUnsupportedClaims) {
 					result.Abstained = true
 				}
 				if ans, ok := resp.Data["answer"].(string); ok && ans == api.RAGAbstainText {
@@ -157,7 +158,10 @@ func evidenceContext(evidence []api.Evidence) string {
 func evidenceFromToolData(data map[string]interface{}) []api.Evidence {
 	sources, ok := data["sources"].([]interface{})
 	if !ok {
-		return nil
+		sources, ok = data["retrieved_chunks"].([]interface{})
+		if !ok {
+			return nil
+		}
 	}
 	evidence := make([]api.Evidence, 0, len(sources))
 	for _, source := range sources {
@@ -172,6 +176,11 @@ func evidenceFromToolData(data map[string]interface{}) []api.Evidence {
 		item := api.Evidence{Text: text}
 		if sourceID, ok := fields["arxiv_id"].(string); ok {
 			item.SourceID = sourceID
+		} else if sourceID, ok := fields["doc_id"].(string); ok {
+			item.SourceID = sourceID
+		}
+		if chunkID, ok := fields["chunk_id"].(string); ok {
+			item.ChunkID = chunkID
 		}
 		if score, ok := fields["score"].(float64); ok {
 			item.Score = &score

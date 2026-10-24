@@ -66,6 +66,7 @@ const (
 	FailureBackendError          = "backend_error"
 	FailureMalformedResponse     = "malformed_response"
 	FailureInsufficientContext   = "insufficient_context"
+	FailureUnsupportedClaims     = "unsupported_claims"
 	FailureEvaluationUnavailable = "evaluation_unavailable"
 )
 
@@ -182,6 +183,11 @@ type BackendAnswer struct {
 	Latency     *StageLatency `json:"latency_ms,omitempty"`
 	Decision    string        `json:"decision"`
 	FailureType string        `json:"failure_type"`
+	// Reflection metadata is optional because other backends and older RAG
+	// responses do not report whether lexical reflection ran.
+	ReflectionPassed       *bool    `json:"reflection_passed,omitempty"`
+	ReflectionScore        *float64 `json:"reflection_score,omitempty"`
+	UnsupportedClaimsCount *int     `json:"unsupported_claims_count,omitempty"`
 }
 
 // EvaluationResult adalah hasil evaluasi opsional.

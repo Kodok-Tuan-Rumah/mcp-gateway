@@ -6,7 +6,6 @@ require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/lib/pq v1.11.2
 	github.com/prometheus/client_golang v1.20.5
-	github.com/sashabaranov/go-openai v1.41.2
 )
 
 require (

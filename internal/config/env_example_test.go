@@ -9,9 +9,6 @@ import (
 	"time"
 )
 
-// TestEnvExampleStaysInSync_WITHCODE sudah pernah: .env.example pernah hanya
-// berisi 2 env var sementara config membaca 13, sehingga orang tidak punya
-// cara tahu knob mana yang bisa diubah tanpa membaca Go.
 func TestEnvExample_ListsEverySupportedVariable(t *testing.T) {
 	// Setiap env var yang dibaca LoadFromLookup.
 	supported := map[string]struct{}{
@@ -46,9 +43,6 @@ func TestEnvExample_ListsEverySupportedVariable(t *testing.T) {
 		}
 	}
 }
-
-// Nilai di .env.example harus bisa di-parse. Kalau tidak, menyalin file itu
-// membuat gateway gagal start karena kesalahan yang tidak jelas.
 func TestEnvExample_ValuesAreParseable(t *testing.T) {
 	for name, value := range parseEnvExample(t) {
 		if value == "" {
@@ -74,8 +68,6 @@ func TestEnvExample_ValuesAreParseable(t *testing.T) {
 	}
 }
 
-// Nilai contoh di .env.example harus cocok dengan default di kode, supaya file
-// itu tidak/template yang menyesatkan.
 func TestEnvExample_ExampleValuesMatchDefaults(t *testing.T) {
 	documented := parseEnvExample(t)
 	want := Default()

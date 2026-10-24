@@ -3,21 +3,18 @@
 > **Normatif.** Go types di `internal/api/contract.go` harus cocok dengan dokumen ini.
 > Contoh JSON di §3 dihasilkan dari Go types sungguhan dan dikunci golden-file test.
 >
-> **Status (2026-10-15):**
+> **Status (2026-10-23):**
 > - **§2 Routing** — keputusan final, sudah disepakati.
 > - **§1 Request dan §3 Response** — tipe Go ada di `internal/api/contract.go`
 >   dengan test kontrak dan golden file, dan **sudah terpasang** di `/ask` dan
 >   `/plan` (`cmd/server/router.go`).
-> - Evidence terstruktur kini diteruskan dari response ArXiv melalui
->   `registry.ToolResponse.TypedResult` dan `planner.ExecutionResult` ke
->   `GatewayResponse`. Context evaluator dibentuk dari teks evidence yang sama;
->   sumber, score, model, dan latency tidak direkonstruksi dari context gabungan.
-> - Gateway menandai pemilihan backend sebagai opsional dan default ke `arxiv`
->   untuk jalur awal. Arah workspace untuk rilis dua-backend adalah pemilihan
->   eksplisit; default ini bersifat transisi.
-> - Evaluasi dilewati untuk abstensi ArXiv dan evidence/context kosong. Jawaban
->   pendek tetap dievaluasi secara konservatif dengan exact match terhadap
->   context evidence oleh evaluator. Detail lintas-repo ada di
+> - Adapter ArXiv dan RAG meneruskan evidence terstruktur dari backend terpilih
+>   ke `GatewayResponse`; evaluator menerima context dari evidence yang sama.
+> - `backend` bersifat opsional dan default ke `arxiv`; client dapat memilih
+>   `arxiv` atau `research_rag` secara eksplisit.
+> - `/ask` dan `/plan` mengeksekusi plan deterministik yang sama. `/plan` tetap
+>   tersedia sebagai alias kompatibilitas, bukan endpoint preview.
+> - Evaluasi dilewati untuk abstensi dan evidence/context kosong. Detail lintas-repo ada di
 >   [`workspace-alignment.md`](workspace-alignment.md).
 >
 > Kontrak per adapter: [`docs/tool-contracts/`](tool-contracts/).
@@ -38,7 +35,7 @@
 
 | Field | Tipe | Required | Default | Batas |
 |---|---|---|---|---|
-| `backend` | enum | tidak | `"arxiv"` | hanya `"arxiv"` di v1 |
+| `backend` | enum | tidak | `"arxiv"` | `"arxiv"` atau `"research_rag"` |
 | `query` | string | ya | — | 3..1000 karakter |
 | `top_k` | int | tidak | `5` | 1..20 |
 
@@ -56,9 +53,10 @@
 - Satu request = **satu** backend. Tidak ada jawaban yang digabung lintas backend di v1.
 - `backend` yang tidak dikenal atau belum tersedia → **HTTP 400** dengan
   `failure_type: "backend_not_available"`. Bukan diam-diam fallback.
-- **Groq tidak memilih backend.** Groq hanya menyusun langkah di dalam backend
-  terpilih; langkah dengan tool milik backend lain dibuang. Backend ditentukan
-  oleh client, supaya routing deterministik.
+- Backend yang dipilih menentukan satu adapter jawaban dan langkah evaluasi.
+  Tidak ada planner eksternal atau pemilihan tool non-deterministik.
+- `/ask` dan `/plan` menjalankan flow yang sama dan mengembalikan response
+  contract yang sama. `/plan` dipertahankan sebagai alias kompatibilitas.
 - `/tool` adalah passthrough langsung ke registry, dengan bentuk JSON sendiri
   (`tool_name`, `trace_id`, `success`, `data`, `error`). **Bukan** bagian dari
   kontrak jawaban — jangan dipakai untuk integrasi.
@@ -73,22 +71,20 @@
 | `arxiv` | `search_arxiv`, `evaluate_answer` | ✅ aktif |
 | `research_rag` | `research_rag`, `evaluate_answer` | ✅ aktif (adapter `/generate`) |
 
-`retrieve_chunks` **tidak ada di backend mana pun** pada v1: adapter-nya masih
-menembak endpoint yang tidak ada di `rag-research`. Lihat
-[`tool-contracts/retrieve_chunks.json`](tool-contracts/retrieve_chunks.json).
+Adapter `retrieve_chunks` sudah dihapus karena `rag-research` tidak menyediakan
+endpoint `/retrieve`. Gunakan backend `research_rag`, yang memanggil `/generate`.
 
 ### Alasan
 
 | Keputusan | Alasan |
 |---|---|
 | Client memilih backend | Deterministik; client yang tahu apakah kebutuhannya corpus ArXiv atau dokumen umum |
-| Default `arxiv` | Satu-satunya adapter yang kontraknya sudah terverifikasi terhadap source (`/query` → `answer` + `sources[{text, score, arxiv_id}]`) |
-| `research_rag` via `/generate` | `rag-research` menjawab di `POST /generate` (port 8000) dengan `answer` + `retrieved_chunks`; adapter-nya terpisah dari `retrieve_chunks` yang tetap tidak dipakai |
-| Groq tidak memilih backend | Memilih tool secara LLM bersifat non-deterministic, sedangkan routing backend ditentukan client; Groq hanya menyusun urutan langkah |
+| Default `arxiv` | Menjaga kompatibilitas request lama; client dapat memilih `research_rag` secara eksplisit |
+| `research_rag` via `/generate` | `rag-research` menjawab di `POST /generate` (port 8000) dengan `answer` + `retrieved_chunks` |
+| Deterministic plan | Satu adapter jawaban per backend, lalu evaluasi jika ada jawaban dan evidence |
 
-> **Target kontrak workspace:** setelah adapter RAG aktif, client mengirim
-> `backend` secara eksplisit. Default ArXiv di atas hanya untuk tahap integrasi
-> satu backend dan akan ditinjau sebelum rilis dua-backend.
+> Client sebaiknya mengirim `backend` secara eksplisit agar maksud pemilihan
+> ArXiv atau corpus riset umum terlihat pada request.
 
 ---
 
@@ -119,7 +115,7 @@ golden-file test (`internal/api/testdata/*.json`). Kalau bentuk JSON berubah,
   "evaluation_status": "completed",
   "evaluation": {"score": 0.86, "failure_mode": "none", "supported_claims": 3, "total_claims": 3, "version": "1.2.1"},
   "query": "apa itu RAG?",
-  "orchestrator": "groq"
+  "orchestrator": "rule-based"
 }
 ```
 
@@ -140,7 +136,34 @@ golden-file test (`internal/api/testdata/*.json`). Kalau bentuk JSON berubah,
 }
 ```
 
-### 3.3 Evaluator tidak tersedia — kunci `"score": 0`
+### 3.3 Abstensi RAG karena klaim lemah
+
+`research_rag` mempertahankan kategori `unsupported_claims` agar konsumen dapat
+membedakannya dari konteks yang memang tidak cukup. Metadata refleksi hanya
+ada bila pemeriksaan dijalankan:
+
+```json
+{
+  "request_id": "req-abc127",
+  "answer": "INSUFFICIENT_CONTEXT",
+  "backend": "research_rag",
+  "decision": "abstain",
+  "failure_type": "unsupported_claims",
+  "reflection_passed": false,
+  "reflection_score": 0.5,
+  "unsupported_claims_count": 2,
+  "evaluation_status": "skipped",
+  "query": "apa hasil studi tersebut?"
+}
+```
+
+`reflection_score` adalah fraksi kalimat yang melewati ambang lexical coverage;
+`unsupported_claims_count` menghitung kalimat yang berada di bawah ambang, bukan
+klaim atomik yang diekstrak. Ini heuristik eksperimental, bukan bukti kebenaran
+atau confidence yang terkalibrasi. Jika refleksi tidak dijalankan, ketiga field
+opsional tersebut dihilangkan.
+
+### 3.4 Evaluator tidak tersedia — kunci `"score": 0`
 
 ```json
 {
@@ -161,7 +184,7 @@ ketiadaan skor dinyatakan lewat `evaluation_status` — bukan lewat angka 0.
 secara struktural mustahil diserialisasi menjadi 0, dan
 `TestScore_NilIsAbsentNotZero` menjaganya.
 
-### 3.4 Error validasi / backend tidak tersedia
+### 3.5 Error validasi / backend tidak tersedia
 
 ```json
 {
@@ -172,7 +195,7 @@ secara struktural mustahil diserialisasi menjadi 0, dan
 }
 ```
 
-### 3.5 HTTP status
+### 3.6 HTTP status
 
 | Status | Kapan |
 |---|---|
@@ -188,7 +211,7 @@ status malformed/non-2xx/timeout, abstensi, serta jalur `/ask` dan `/plan`
 sampai response publik. Coverage pengujian ada di
 `internal/tools/search_arxiv_test.go` dan `cmd/server/acceptance_test.go`.
 
-### 3.6 Aturan field
+### 3.7 Aturan field
 
 | Field | Wajib? | Catatan |
 |---|---|---|
@@ -202,6 +225,7 @@ sampai response publik. Coverage pengujian ada di
 | `model` | tidak | Hanya kalau backend melaporkannya |
 | `latency_ms` | tidak | Hanya kalau backend melaporkannya |
 | `evaluation.score` | tidak | **Hanya kalau benar-benar dinilai** |
+| `reflection_passed`, `reflection_score`, `unsupported_claims_count` | tidak | Hanya dari backend `research_rag` bila refleksi dijalankan; metrik lexical eksperimental |
 
 `evidence` dan `answer` berada dalam satu struct (`BackendAnswer`) supaya
 keduanya tidak bisa berasal dari backend berbeda.
@@ -212,7 +236,7 @@ keduanya tidak bisa berasal dari backend berbeda.
 
 | Tidak ada | Alasan |
 |---|---|
-| `retrieve_chunks` dari jalur jawaban | `rag-research` tidak punya `/retrieve`; `research_rag` menjawab via `/generate` |
+| Adapter `retrieve_chunks` | `rag-research` tidak punya `/retrieve`; `research_rag` menjawab via `/generate` |
 | Auto-retry | Tidak aktif pada jalur jawaban; kebijakan retry masih perlu keputusan operasional |
-| Readiness check | `/health` adalah liveness; `/ready` memeriksa ArXiv, evaluator, dan RAG. Kebijakan wajib/opsional per backend masih perlu diperjelas |
+| Readiness check | `/health` adalah liveness; `/ready` melaporkan kapabilitas ArXiv/RAG dan mengembalikan 200 jika setidaknya satu backend jawaban tersedia. Evaluator bersifat opsional untuk menjawab |
 | `X-Request-ID` ke downstream | Belum dipropagasikan oleh adapter; termasuk gate observability |

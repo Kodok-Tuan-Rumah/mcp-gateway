@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/malikimayzar/mcp-gateway/internal/api"
-	"github.com/malikimayzar/mcp-gateway/internal/orchestrator"
 	"github.com/malikimayzar/mcp-gateway/internal/planner"
 )
 
@@ -12,145 +11,49 @@ func askReq() api.AskRequest {
 	return api.AskRequest{Backend: api.BackendArxiv, Query: "apa itu RAG?", TopK: 5}
 }
 
-// ───────────────────── plan deterministik per backend ─────────────────────
+// Deterministic plans make the selected backend call and then evaluate its answer.
+func TestPlanForBackend_ArxivBuildsAnswerAndEvaluation(t *testing.T) {
+	req := askReq()
+	plan := planForBackend(req)
 
-// Plan default hanya boleh menyentuh search_arxiv + evaluate_answer.
-// retrieve_chunks tidak boleh muncul di jalur jawaban pada v1.
-func TestPlanForBackend_UsesOnlyBackendTools(t *testing.T) {
-	plan := planForBackend(askReq())
+	if plan.Query != req.Query || len(plan.Steps) != 2 {
+		t.Fatalf("plan = %+v, want query and two steps", plan)
+	}
+	if plan.Steps[0].ToolName != toolSearchArxiv || plan.Steps[1].ToolName != toolEvaluateAnswer {
+		t.Fatalf("steps = %+v", plan.Steps)
+	}
+	if plan.Steps[0].Params["query"] != req.Query || plan.Steps[0].Params["top_k"] != float64(req.TopK) {
+		t.Errorf("search params = %v", plan.Steps[0].Params)
+	}
+}
 
-	if len(plan.Steps) != 2 {
-		t.Fatalf("expected 2 steps, got %d", len(plan.Steps))
+func TestPlanForBackend_ResearchRAGBuildsAnswerAndEvaluation(t *testing.T) {
+	req := askReq()
+	req.Backend = api.BackendResearchRAG
+	plan := planForBackend(req)
+
+	if plan.Query != req.Query || len(plan.Steps) != 2 {
+		t.Fatalf("plan = %+v, want query and two steps", plan)
 	}
-	for _, step := range plan.Steps {
-		if !toolAllowed(api.BackendArxiv, step.ToolName) {
-			t.Errorf("step %q bukan tool milik backend %s", step.ToolName, api.BackendArxiv)
-		}
+	answer := plan.Steps[0]
+	if answer.ToolName != toolResearchRAG {
+		t.Fatalf("answer tool = %q", answer.ToolName)
 	}
-	if plan.Steps[0].ToolName != toolSearchArxiv {
-		t.Errorf("langkah pertama harus search_arxiv, got %s", plan.Steps[0].ToolName)
+	if answer.Params["query"] != req.Query || answer.Params["top_k"] != float64(req.TopK) || answer.Params["use_reranker"] != false {
+		t.Errorf("research_rag params = %v", answer.Params)
 	}
 	if plan.Steps[1].ToolName != toolEvaluateAnswer {
-		t.Errorf("langkah terakhir harus evaluate_answer, got %s", plan.Steps[1].ToolName)
+		t.Errorf("last step = %q, want %q", plan.Steps[1].ToolName, toolEvaluateAnswer)
 	}
 }
 
-func TestPlanForBackend_QueryAndTopKPropagated(t *testing.T) {
-	plan := planForBackend(askReq())
-
-	if plan.Steps[0].Params["query"] != "apa itu RAG?" {
-		t.Errorf("query tidak diteruskan: %v", plan.Steps[0].Params["query"])
-	}
-	if plan.Steps[0].Params["top_k"] != float64(5) {
-		t.Errorf("top_k harus float64, got %T(%v)", plan.Steps[0].Params["top_k"], plan.Steps[0].Params["top_k"])
+func TestPlanForBackend_UnknownBackendIsEmpty(t *testing.T) {
+	req := askReq()
+	req.Backend = "unknown"
+	if plan := planForBackend(req); len(plan.Steps) != 0 {
+		t.Errorf("unknown backend plan = %+v", plan)
 	}
 }
-
-// retrieve_chunks tidak boleh diizinkan di backend mana pun pada v1 —
-// adapter-nya masih menembak endpoint yang belum ada.
-func TestBackendTools_ExcludeRetrieveChunks(t *testing.T) {
-	for backend, list := range backendTools {
-		for _, tool := range list {
-			if tool == toolRetrieveChunks {
-				t.Errorf("backend %s tidak boleh memakai %s di v1", backend, tool)
-			}
-		}
-	}
-}
-
-func TestToolsForBackend_UnknownBackendIsNil(t *testing.T) {
-	if toolsForBackend("nonsense") != nil {
-		t.Error("backend tak dikenal harus punya daftar tool kosong")
-	}
-}
-
-// ─────────────────────── plan dari Groq dibatasi ───────────────────────
-
-// Groq boleh menyusun langkah dari backend terpilih, tapi tidak boleh memilih backend.
-func TestPlanFromGroq_DropsForeignTools(t *testing.T) {
-	orcPlan := orchestrator.Plan{Steps: []orchestrator.ToolCall{
-		{ToolName: toolSearchArxiv, Params: map[string]interface{}{}},
-		{ToolName: toolRetrieveChunks, Params: map[string]interface{}{}}, // tidak diizinkan
-		{ToolName: "search_papers", Params: map[string]interface{}{}},    // tidak dikenal
-	}}
-
-	plan := planFromGroq(orcPlan, askReq())
-
-	for _, step := range plan.Steps {
-		if step.ToolName == toolRetrieveChunks {
-			t.Error("retrieve_chunks harus dibuang")
-		}
-		if step.ToolName == "search_papers" {
-			t.Error("tool yang tidak dikenal harus dibuang")
-		}
-	}
-	if len(plan.Steps) != 1 || plan.Steps[0].ToolName != toolSearchArxiv {
-		t.Errorf("expected hanya search_arxiv, got %+v", plan.Steps)
-	}
-}
-
-// Plan Groq tanpa langkah pembawa jawaban harus ditolak supaya pemanggil
-// jatuh ke plan deterministik.
-func TestPlanFromGroq_EmptyWhenNoAnswerStep(t *testing.T) {
-	orcPlan := orchestrator.Plan{Steps: []orchestrator.ToolCall{
-		{ToolName: toolEvaluateAnswer, Params: map[string]interface{}{}},
-	}}
-
-	if plan := planFromGroq(orcPlan, askReq()); len(plan.Steps) != 0 {
-		t.Errorf("plan tanpa langkah menjawab harus kosong, got %+v", plan.Steps)
-	}
-}
-
-func TestPlanFromGroq_FillsMissingQueryAndTopK(t *testing.T) {
-	orcPlan := orchestrator.Plan{Steps: []orchestrator.ToolCall{
-		{ToolName: toolSearchArxiv, Params: map[string]interface{}{}},
-	}}
-
-	plan := planFromGroq(orcPlan, askReq())
-	step := plan.Steps[0]
-
-	if step.Params["query"] != "apa itu RAG?" {
-		t.Errorf("query harus diisi dari request, got %v", step.Params["query"])
-	}
-	if step.Params["top_k"] != float64(5) {
-		t.Errorf("top_k harus diisi dari request, got %v", step.Params["top_k"])
-	}
-}
-
-// Params dari LLM tidak boleh bocor ke plan lain.
-func TestPlanFromGroq_CopiesParams(t *testing.T) {
-	shared := map[string]interface{}{"query": "dari LLM"}
-	orcPlan := orchestrator.Plan{Steps: []orchestrator.ToolCall{
-		{ToolName: toolSearchArxiv, Params: shared},
-	}}
-
-	plan := planFromGroq(orcPlan, askReq())
-	plan.Steps[0].Params["query"] = "diubah"
-
-	if shared["query"] != "dari LLM" {
-		t.Error("params LLM harus di-copy, bukan dipakai langsung")
-	}
-}
-
-// evaluate_answer tidak diberi query — executor yang mengisinya.
-func TestPlanFromGroq_SkipsQueryForEvaluate(t *testing.T) {
-	orcPlan := orchestrator.Plan{Steps: []orchestrator.ToolCall{
-		{ToolName: toolSearchArxiv, Params: map[string]interface{}{}},
-		{ToolName: toolEvaluateAnswer, Params: map[string]interface{}{}},
-	}}
-
-	plan := planFromGroq(orcPlan, askReq())
-
-	for _, step := range plan.Steps {
-		if step.ToolName == toolEvaluateAnswer {
-			if _, has := step.Params["query"]; has {
-				t.Error("evaluate_answer tidak boleh diberi query")
-			}
-		}
-	}
-}
-
-// ─────────────────────────── pemetaan response ───────────────────────────
 
 func execResult(answer string, steps ...planner.StepResult) planner.ExecutionResult {
 	return planner.ExecutionResult{Query: "apa itu RAG?", Answer: answer, Steps: steps}
@@ -230,6 +133,42 @@ func TestToResponse_EmptyAnswerIsAbstention(t *testing.T) {
 
 	if resp.Decision != api.DecisionAbstain {
 		t.Errorf("jawaban kosong harus jadi abstensi, bukan answer; got %v", resp.Decision)
+	}
+}
+
+func TestToResponse_UnsupportedClaimsPreservesReflectionMetadata(t *testing.T) {
+	passed := false
+	score := 0.5
+	unsupported := 2
+	req := askReq()
+	req.Backend = api.BackendResearchRAG
+	result := execResult(api.RAGAbstainText,
+		okStep(toolResearchRAG, map[string]interface{}{
+			"answer":                   api.RAGAbstainText,
+			"failure_type":             api.FailureUnsupportedClaims,
+			"reflection_passed":        passed,
+			"reflection_score":         score,
+			"unsupported_claims_count": unsupported,
+		}),
+	)
+	result.Abstained = true
+
+	resp := toResponse(req, "req-1", orchestratorRuleBased, result)
+
+	if resp.Decision != api.DecisionAbstain {
+		t.Errorf("decision: got %q", resp.Decision)
+	}
+	if resp.FailureType != api.FailureUnsupportedClaims {
+		t.Errorf("failure_type: got %q", resp.FailureType)
+	}
+	if resp.ReflectionPassed == nil || *resp.ReflectionPassed {
+		t.Errorf("reflection_passed: got %v, want false", resp.ReflectionPassed)
+	}
+	if resp.ReflectionScore == nil || *resp.ReflectionScore != score {
+		t.Errorf("reflection_score: got %v, want %v", resp.ReflectionScore, score)
+	}
+	if resp.UnsupportedClaimsCount == nil || *resp.UnsupportedClaimsCount != unsupported {
+		t.Errorf("unsupported_claims_count: got %v, want %d", resp.UnsupportedClaimsCount, unsupported)
 	}
 }
 

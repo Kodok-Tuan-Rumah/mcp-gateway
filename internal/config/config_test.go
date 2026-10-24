@@ -33,9 +33,6 @@ func TestDefault_IsUsableWithoutEnvironment(t *testing.T) {
 	if cfg.PostgresDSN != DefaultPostgresDSN {
 		t.Errorf("PostgresDSN: %q", cfg.PostgresDSN)
 	}
-	if cfg.GroqAPIKey != "" {
-		t.Errorf("GroqAPIKey harus kosong di default, dapat %q", cfg.GroqAPIKey)
-	}
 }
 
 // Setiap service wajib punya BaseURL, Timeout, dan batas ukuran response yang
@@ -68,14 +65,10 @@ func TestDefault_EveryServiceIsFullyConfigured(t *testing.T) {
 func TestDefault_ReturnsIndependentValues(t *testing.T) {
 	a := Default()
 	a.Arxiv.BaseURL = "http://diubah"
-	a.GroqAPIKey = "kunci"
 
 	b := Default()
 	if b.Arxiv.BaseURL == "http://diubah" {
 		t.Error("Default() mengembalikan nilai yang/shared — perubahan bisa bocor antar pemanggil")
-	}
-	if b.GroqAPIKey != "" {
-		t.Error("GroqAPIKey ikut berubah — konfigurasi shared antar pemanggil")
 	}
 }
 
@@ -99,8 +92,6 @@ func TestLoadFromLookup_ReadsEveryOverride(t *testing.T) {
 	env := map[string]string{
 		"GATEWAY_LISTEN_ADDRESS":   ":9999",
 		"POSTGRES_DSN":             "host=db port=5432 user=u password=p dbname=d sslmode=disable",
-		"GROQ_API_KEY":             "gsk_test",
-		"GROQ_MODEL":               "openai/gpt-oss-20b",
 		"ARXIV_SERVICE_URL":        "http://arxiv:8080",
 		"EVAL_SERVICE_URL":         "http://eval:8002",
 		"RAG_SERVICE_URL":          "http://rag:8003",
@@ -124,12 +115,6 @@ func TestLoadFromLookup_ReadsEveryOverride(t *testing.T) {
 	}
 	if cfg.PostgresDSN != env["POSTGRES_DSN"] {
 		t.Errorf("PostgresDSN: %q", cfg.PostgresDSN)
-	}
-	if cfg.GroqAPIKey != "gsk_test" {
-		t.Errorf("GroqAPIKey: %q", cfg.GroqAPIKey)
-	}
-	if cfg.GroqModel != "openai/gpt-oss-20b" {
-		t.Errorf("GroqModel: %q", cfg.GroqModel)
 	}
 	if cfg.RequestTimeout != 45*time.Second {
 		t.Errorf("RequestTimeout: %v", cfg.RequestTimeout)

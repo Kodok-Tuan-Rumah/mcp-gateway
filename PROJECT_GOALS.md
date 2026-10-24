@@ -1,10 +1,10 @@
 # MCP Gateway — Project Goals & Integration Spec
 
 > **Repo:** `mcp-gateway`  
-> **Status (source snapshot 2026-10-22):** Both answer backends (`arxiv` and `research_rag`) are wired and evidence is normalized per backend. Root Compose defines the shared topology, but full-stack runtime and monitoring verification remain separate release gates. Other open gates include downstream trace propagation, `/tool` security, and retiring or repairing the legacy retrieval tool.
-> **Last Updated:** 2026-10-22
+> **Status (source snapshot 2026-10-23):** Both answer backends (`arxiv` and `research_rag`) are wired and evidence is normalized per backend. `/ask` and `/plan` share one deterministic flow; `/ready` reports backend capabilities independently and treats evaluator availability as optional for answering. Root Compose defines the shared topology, but full-stack runtime and monitoring verification remain separate release gates. Other open gates include evaluator dependency readiness, downstream trace propagation, and `/tool` security.
+> **Last Updated:** 2026-10-23
 
-> **Evidence note:** Source-level integration is implemented and has Go contract coverage; container/monitoring/smoke verification is tracked separately. The legacy `retrieve_chunks` adapter still targets a `/retrieve` endpoint that `rag-research` does not expose, so it remains excluded from `/ask` and `/plan`.
+> **Evidence note:** Source-level integration is implemented and has Go contract coverage; container/monitoring/smoke verification is tracked separately. `research_rag` uses the supported `/generate` endpoint. The old `retrieve_chunks` adapter was removed because its `/retrieve` endpoint does not exist in `rag-research`.
 
 ---
 
@@ -100,14 +100,13 @@ Validate requests and tool parameters, cap `top_k` and input size, and return us
 
 These are current source-level or operational gaps, not benchmark results:
 
-1. `mcp-gateway/internal/tools/retrieve_chunks.go` calls `POST /retrieve` using the configured `RAG_SERVICE_URL` (default `:8000`). `rag-research` does not expose `/retrieve`, so the tool remains a low-level `/tool` passthrough and is excluded from `/ask` and `/plan`.
-2. `rag-research` serves `POST /generate` on port `8000`; the `research_rag` adapter normalizes its `answer` and `retrieved_chunks` and preserves confidence/abstention fields.
-3. The workspace root compose joins the four repositories on one network and supplies `ARXIV_SERVICE_URL`, `EVAL_SERVICE_URL`, `RAG_SERVICE_URL`, and `OLLAMA_HOST`. This repository itself still has no Compose file.
-4. Gateway request IDs are not yet propagated to downstream service headers, limiting cross-service trace correlation.
-5. ArXiv `sources[]` and RAG `retrieved_chunks[]` are normalized into public `evidence[]` by typed backend adapters; response provenance is returned.
-6. The evaluator API returns `evaluator_version` and claim counts, and the gateway maps them. `ground_truth` is optional; the online short-answer path uses its conservative fallback when absent.
-7. All three downstream base URLs and timeouts are configurable. Container deployments need a reachable `OLLAMA_HOST` for evaluator embeddings.
-8. `/ready` probes all three downstream services. Clarify which dependencies are mandatory for each selected backend because evaluation is optional for answering.
+1. `rag-research` serves `POST /generate` on port `8000`; the `research_rag` adapter normalizes its `answer` and `retrieved_chunks` and preserves confidence/abstention fields.
+2. The workspace root compose joins the four repositories on one network and supplies `ARXIV_SERVICE_URL`, `EVAL_SERVICE_URL`, `RAG_SERVICE_URL`, and `OLLAMA_HOST`. This repository itself still has no Compose file.
+3. Gateway request IDs are not yet propagated to downstream service headers, limiting cross-service trace correlation.
+4. ArXiv `sources[]` and RAG `retrieved_chunks[]` are normalized into public `evidence[]` by typed backend adapters; response provenance is returned.
+5. The evaluator API returns `evaluator_version` and claim counts, and the gateway maps them. `ground_truth` is optional; the online short-answer path uses its conservative fallback when absent.
+6. All three downstream base URLs and timeouts are configurable. Container deployments need a reachable `OLLAMA_HOST` for evaluator embeddings.
+7. `/ready` reports ArXiv and RAG answer capabilities independently and returns HTTP 200 when either backend is reachable. Evaluator failure is degraded but does not block answers. The evaluator probe checks its `/health` endpoint only; readiness of its embedding dependency still needs a reliable signal from `llm-eval-framework`.
 
 Treat the remaining source-level gaps as release gates; runtime verification is separate.
 
@@ -123,7 +122,7 @@ The actionable, phase-by-phase checklist and completion criteria are maintained 
 - Keep `rag-research` and `arxiv-research-assistant` as separate backend choices; do not merge their evidence implicitly.
 - Keep multi-backend answer synthesis out of the first release.
 - Record source-verified request/response contracts and known deployment assumptions in [`docs/workspace-alignment.md`](docs/workspace-alignment.md).
-- Expose explicit client backend selection (`arxiv` or `research_rag`); the current ArXiv default remains transitional.
+- Support explicit client backend selection (`arxiv` or `research_rag`) while retaining the ArXiv default for backward compatibility; clients should select explicitly.
 
 **Exit gate:** A maintainer can explain which service owns retrieval, generation, evaluation, and orchestration without ambiguous overlap.
 

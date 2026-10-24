@@ -71,7 +71,7 @@ func TestLogEvalAsync_PassesEvalLogIntact(t *testing.T) {
 		Answer:           "Retrieval Augmented Generation",
 		Backend:          "arxiv",
 		BackendModel:     "openai/gpt-oss-20b",
-		Orchestrator:     "groq",
+		Orchestrator:     "rule-based",
 		Decision:         "answer",
 		FailureType:      "none",
 		EvaluationStatus: "completed",

@@ -67,7 +67,7 @@ func TestGolden_AnsweredWithEvidence(t *testing.T) {
 		EvaluationStatus: EvalCompleted,
 		Evaluation:       &EvaluationResult{Score: f64(0.86), FailureMode: "none", SupportedClaims: 3, TotalClaims: 3},
 		Query:            "apa itu RAG?",
-		Orchestrator:     "groq",
+		Orchestrator:     "rule-based",
 	}
 	assertGolden(t, "answered", marshalJSON(t, resp))
 }

@@ -38,19 +38,22 @@ type ResearchRAGRequest struct {
 
 // ResearchRAGResponse is the verified response from POST /generate.
 type ResearchRAGResponse struct {
-	Query               string             `json:"query"`
-	Answer              string             `json:"answer"`
-	RetrievedChunks     []ResearchRAGChunk `json:"retrieved_chunks"`
-	RetrievalMethod     string             `json:"retrieval_method"`
-	LatencyRetrievalMs  float64            `json:"latency_retrieval_ms"`
-	LatencyGenerationMs float64            `json:"latency_generation_ms"`
-	LatencyTotalMs      float64            `json:"latency_total_ms"`
-	Model               string             `json:"model"`
-	Confidence          float64            `json:"confidence"`
-	Decision            string             `json:"decision"`
-	FailureType         string             `json:"failure_type,omitempty"`
-	GeneratorStatus     string             `json:"generator_status,omitempty"`
-	GeneratorConfidence *float64           `json:"generator_confidence,omitempty"`
+	Query                  string             `json:"query"`
+	Answer                 string             `json:"answer"`
+	RetrievedChunks        []ResearchRAGChunk `json:"retrieved_chunks"`
+	RetrievalMethod        string             `json:"retrieval_method"`
+	LatencyRetrievalMs     float64            `json:"latency_retrieval_ms"`
+	LatencyGenerationMs    float64            `json:"latency_generation_ms"`
+	LatencyTotalMs         float64            `json:"latency_total_ms"`
+	Model                  string             `json:"model"`
+	Confidence             float64            `json:"confidence"`
+	Decision               string             `json:"decision"`
+	FailureType            string             `json:"failure_type,omitempty"`
+	GeneratorStatus        string             `json:"generator_status,omitempty"`
+	GeneratorConfidence    *float64           `json:"generator_confidence,omitempty"`
+	ReflectionPassed       *bool              `json:"reflection_passed,omitempty"`
+	ReflectionScore        *float64           `json:"reflection_score,omitempty"`
+	UnsupportedClaimsCount *int               `json:"unsupported_claims_count,omitempty"`
 }
 
 // ResearchRAGChunk is one retrieved chunk returned by rag-research.
@@ -121,6 +124,15 @@ func (r ResearchRAGResponse) ToolData() map[string]interface{} {
 	if r.GeneratorConfidence != nil {
 		data["generator_confidence"] = *r.GeneratorConfidence
 	}
+	if r.ReflectionPassed != nil {
+		data["reflection_passed"] = *r.ReflectionPassed
+	}
+	if r.ReflectionScore != nil {
+		data["reflection_score"] = *r.ReflectionScore
+	}
+	if r.UnsupportedClaimsCount != nil {
+		data["unsupported_claims_count"] = *r.UnsupportedClaimsCount
+	}
 	return data
 }
 
@@ -142,7 +154,7 @@ func (r ResearchRAGResponse) IsAbstention() bool {
 	if strings.TrimSpace(r.Decision) == "REJECT" {
 		return true
 	}
-	if r.FailureType == api.FailureInsufficientContext {
+	if r.FailureType == api.FailureInsufficientContext || r.FailureType == api.FailureUnsupportedClaims {
 		return true
 	}
 	return strings.TrimSpace(r.Answer) == api.RAGAbstainText

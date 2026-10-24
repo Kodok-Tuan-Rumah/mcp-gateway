@@ -131,9 +131,9 @@ Grafana panel "Groq vs Rule-based" menunjukkan persentase rule-based naik drasti
 ### Mitigasi yang Diimplementasikan
 
 > **Catatan historis:** cuplikan berikut berasal dari implementasi lama dan
-> sudah tidak menjadi jalur aktif. Router saat ini memakai `runWithGroq` lalu
-> `planner.Execute` atas `planForBackend`; fallback deterministik tidak memakai
-> retrieval chunks dan tidak menjalankan retry.
+> sudah tidak menjadi jalur aktif. Per 2026-10-23, `/ask` dan `/plan` langsung
+> menjalankan `planForBackend`; gateway tidak lagi memanggil planner Groq.
+> Retry tetap dinonaktifkan.
 
 ```go
 // main.go — fallback logic
@@ -146,8 +146,8 @@ if err != nil {
 }
 ```
 
-Fallback deterministik saat ini tetap melayani request meski Groq down. Retry
-dinonaktifkan sampai kebijakan percobaan ulang dirancang.
+Karena planner eksternal sudah dihapus, outage Groq tidak lagi menjadi failure
+mode gateway. Retry dinonaktifkan sampai kebijakan percobaan ulang dirancang.
 
 ### Lesson Learned
 

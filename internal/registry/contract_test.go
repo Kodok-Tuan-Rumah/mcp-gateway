@@ -47,7 +47,7 @@ func assertGolden(t *testing.T, name string, got string) {
 
 func TestGolden_ToolRequestShape(t *testing.T) {
 	req := ToolRequest{
-		ToolName: "retrieve_chunks",
+		ToolName: "example_tool",
 		TraceID:  "trace-1",
 		Params:   map[string]interface{}{"query": "transformer", "top_k": float64(5)},
 	}
@@ -56,7 +56,7 @@ func TestGolden_ToolRequestShape(t *testing.T) {
 
 func TestGolden_ToolResponseSuccess(t *testing.T) {
 	resp := ToolResponse{
-		ToolName: "retrieve_chunks",
+		ToolName: "example_tool",
 		TraceID:  "trace-1",
 		Success:  true,
 		Data:     map[string]interface{}{"results": []interface{}{"a", "b"}},
@@ -84,14 +84,14 @@ func TestGolden_ToolResponseFailure(t *testing.T) {
 // (case-insensitive matching tidak berlaku pada underscore), dan setiap
 // payload bergaya snake_case akan ditolak dengan 400.
 func TestContract_SnakeCasePayloadIsAccepted(t *testing.T) {
-	raw := `{"tool_name":"retrieve_chunks","trace_id":"trace-1","params":{"query":"transformer","top_k":5}}`
+	raw := `{"tool_name":"example_tool","trace_id":"trace-1","params":{"query":"transformer","top_k":5}}`
 
 	var req ToolRequest
 	if err := json.Unmarshal([]byte(raw), &req); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	if req.ToolName != "retrieve_chunks" {
+	if req.ToolName != "example_tool" {
 		t.Errorf("tool_name tidak ter-parse: ToolName=%q — tag json hilang?", req.ToolName)
 	}
 	if req.TraceID != "trace-1" {
@@ -106,13 +106,13 @@ func TestContract_SnakeCasePayloadIsAccepted(t *testing.T) {
 func TestContract_SnakeCasePayloadReachesHandler(t *testing.T) {
 	r := New()
 	var seen ToolRequest
-	r.Register("retrieve_chunks", func(_ context.Context, req ToolRequest) ToolResponse {
+	r.Register("example_tool", func(_ context.Context, req ToolRequest) ToolResponse {
 		seen = req
 		return ToolResponse{Success: true}
 	})
 
 	var req ToolRequest
-	if err := json.Unmarshal([]byte(`{"tool_name":"retrieve_chunks","params":{"query":"q"}}`), &req); err != nil {
+	if err := json.Unmarshal([]byte(`{"tool_name":"example_tool","params":{"query":"q"}}`), &req); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
@@ -120,7 +120,7 @@ func TestContract_SnakeCasePayloadReachesHandler(t *testing.T) {
 	if !resp.Success {
 		t.Fatalf("handler tidak dipanggil: %s", resp.Error)
 	}
-	if seen.ToolName != "retrieve_chunks" {
+	if seen.ToolName != "example_tool" {
 		t.Errorf("handler terima ToolName=%q", seen.ToolName)
 	}
 }
@@ -154,7 +154,7 @@ func TestContract_ResponseIsSnakeCase(t *testing.T) {
 // Test ini mendokumentasikan perilaku itu supaya tidak disalahartikan nanti.
 func TestContract_PascalCaseIsNotAccepted(t *testing.T) {
 	var req ToolRequest
-	if err := json.Unmarshal([]byte(`{"ToolName":"retrieve_chunks"}`), &req); err != nil {
+	if err := json.Unmarshal([]byte(`{"ToolName":"example_tool"}`), &req); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if req.ToolName != "" {

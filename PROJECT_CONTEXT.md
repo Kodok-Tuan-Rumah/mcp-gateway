@@ -1,7 +1,7 @@
 # PROJECT: AI Research Workspace Gateway
 
 > **Project direction:** Keep the gateway thin. It routes research questions to a clearly owned backend and returns the answer with its evidence, provenance, and honest evaluation status. The four repositories remain independently useful services/projects; this workspace is not yet a verified single deployment.
-> **Source snapshot:** 2026-10-22. `PROJECT_GOALS.md` defines intended boundaries and phase gates; this file summarizes current source-level architecture and known integration state.
+> **Source snapshot:** 2026-10-23. `PROJECT_GOALS.md` defines intended boundaries and phase gates; this file summarizes current source-level architecture and known integration state.
 
 ## GOAL
 
@@ -35,9 +35,8 @@ Suggested boundaries:
 
 ```text
 POST /ask or /plan
-  → validate request and restrict tools to the selected backend (arxiv or research_rag)
-  → call the selected backend adapter; /ask may use a filtered Groq plan,
-    /plan uses a deterministic backend-specific plan
+  → validate request and select one backend (arxiv or research_rag)
+  → execute its deterministic answer step followed by evaluation when applicable
   → executor normalizes answer + evidence and optionally calls evaluator
   → map result to the public response; persist only a valid evaluation asynchronously
   → GET /ready probes ArXiv, evaluator, and RAG concurrently
@@ -46,12 +45,12 @@ POST /ask or /plan
 The active answer path is wired end to end at source level:
 
 * The ArXiv adapter calls the Go backend `/query`; the RAG adapter calls `rag-research` `POST /generate`. Both normalize their own answer + evidence, so evidence cannot cross backends.
-* `/ask` and `/plan` accept `backend: "arxiv"` or `backend: "research_rag"`. Groq plans are filtered to the selected backend; the deterministic fallback uses the same backend-scoped plan.
+* `/ask` and `/plan` accept `backend: "arxiv"` or `backend: "research_rag"`; both routes execute the same deterministic plan and response contract. `backend` defaults to `arxiv` for compatibility, though clients should choose explicitly.
 * ArXiv `sources[]` and RAG `retrieved_chunks[]` are normalized into structured `evidence[]` by their typed adapters. The evaluator receives the same answer and evidence.
 * Evaluation result maps `evaluation_status`, score, failure mode, evaluator version, `supported_claims`, and `total_claims`. An evaluator outage remains `unavailable`; it is never converted to score 0.
-* `retrieve_chunks` is still a low-level `/tool` passthrough. It uses the configured `RAG_SERVICE_URL` (default `:8000`) and calls `POST /retrieve`, an endpoint `rag-research` does not expose; it is deliberately excluded from `/ask` and `/plan`.
-* All three downstream base URLs and timeouts are configurable. The workspace root compose supplies `ARXIV_SERVICE_URL`, `EVAL_SERVICE_URL`, `RAG_SERVICE_URL`, and `OLLAMA_HOST`; this repository itself still has no Compose file.
-* Public `/ask` and `/plan` use backend-scoped plans. The legacy `retrieve_chunks` tool remains registered for low-level `/tool` calls, but its `/retrieve` contract is unavailable and it is excluded from answer routes.
+* The unsupported `retrieve_chunks` adapter has been removed because `rag-research` does not expose `/retrieve`. The active `research_rag` adapter calls `POST /generate`.
+* All three downstream base URLs and timeouts are configurable. `/ready` reports ArXiv and RAG answer capabilities separately and returns 200 if either answer backend is reachable; evaluator failure is reported as degraded but does not block answers. The evaluator probe currently checks only its `/health` endpoint, not embedding readiness.
+* The workspace root compose supplies `ARXIV_SERVICE_URL`, `EVAL_SERVICE_URL`, `RAG_SERVICE_URL`, and `OLLAMA_HOST`; this repository itself still has no Compose file.
 
 Runtime verification (containers, monitoring targets, and smoke test) is tracked separately from these source-level statements.
 

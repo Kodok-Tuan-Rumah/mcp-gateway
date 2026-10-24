@@ -32,7 +32,7 @@ evidence. Gateway melewati evaluasi untuk abstensi atau context kosong.
 | External API | HTTP/JSON (`/ask`, `/plan`, `/tool`) | Current implementation; MCP protocol interoperability is not implemented yet |
 | Gateway language | Go | Low latency routing, goroutine-based async logging, strong typing |
 | ML services | Python | Ecosystem — HuggingFace, sentence-transformers, rank-bm25 |
-| Orchestrator | Groq (default model: openai/gpt-oss-20b) | Fast inference for planning; model configurable via `GROQ_MODEL`, fallback to rule-based if unavailable |
+| Orchestrator | Deterministic backend plan | One selected answer backend followed by evaluation; no external planner dependency |
 | Evaluation | Ollama (nomic-embed-text) | Local, no LLM judge needed, faithfulness via cosine similarity |
 | Storage | PostgreSQL | Eval scores persisted for trend analysis |
 
@@ -88,7 +88,7 @@ and returns `503` when any probe is not `up`.
 ## API
 
 ### `POST /ask` — answer flow
-Groq may select the answering steps (search or RAG or both backends' tools); the gateway filters the plan to the selected backend and falls back to a deterministic plan if Groq is unavailable or returns no usable answer step. Answer backends are `arxiv` and `research_rag`.
+Runs one deterministic plan for the selected backend: `search_arxiv` or `research_rag`, followed by `evaluate_answer` when answer and evidence are available. If omitted, `backend` defaults to `arxiv`.
 
 ```bash
 curl -X POST http://localhost:8090/ask \
@@ -106,7 +106,7 @@ curl -X POST http://localhost:8090/ask \
   "failure_type": "none",
   "evaluation_status": "completed",
   "evaluation": {"score": 0.8611, "version": "1.2.1"},
-  "orchestrator": "groq",
+  "orchestrator": "rule-based",
   "steps": [
     {"tool_name": "search_arxiv", "success": true},
     {"tool_name": "evaluate_answer", "success": true}
@@ -114,10 +114,10 @@ curl -X POST http://localhost:8090/ask \
 }
 ```
 
-The response includes structured `evidence[]` from the same ArXiv result used to build evaluator context. Abstentions return `decision: "abstain"` with `failure_type: "insufficient_context"`; backend failures return `decision: "error"`. If evaluation is skipped or unavailable, that status stays separate from the answer and no score is returned.
+The response includes structured `evidence[]` from the selected backend result; the same evidence builds evaluator context. Abstentions return `decision: "abstain"` with `failure_type: "insufficient_context"`; backend failures return `decision: "error"`. If evaluation is skipped or unavailable, that status stays separate from the answer and no score is returned.
 
-### `POST /plan` — deterministic answer flow
-Runs the selected backend's answer and evaluation plan without calling Groq. It does not perform automatic retry.
+### `POST /plan` — compatibility alias
+Runs the same answer flow and returns the same response contract as `/ask`. The route is kept for existing clients; it does not return a preview-only plan.
 
 ```bash
 curl -X POST http://localhost:8090/plan \
@@ -126,31 +126,37 @@ curl -X POST http://localhost:8090/plan \
 ```
 
 ### `POST /tool` — Direct Tool Call
-Call a registered tool directly. This is a low-level passthrough; it is not the normalized answer API. `retrieve_chunks` is registered for visibility but its downstream contract is not implemented and the tool is not used by `/ask` or `/plan`.
+Call a registered tool directly. This is a low-level passthrough; it is not the normalized answer API. Normal clients should use `/ask` so backend selection, evidence normalization, evaluation, and failure mapping stay consistent.
 
 ```bash
 curl -X POST http://localhost:8090/tool \
   -H "Content-Type: application/json" \
   -d '{
-    "tool_name": "retrieve_chunks",
-    "params": {"query": "transformer architecture", "top_k": 5, "method": "hybrid"}
+    "tool_name": "research_rag",
+    "params": {"query": "transformer architecture", "top_k": 5, "use_reranker": false}
   }'
 ```
 
 ### `GET /health`
 ```json
-{"check": "liveness", "status": "ok", "tools": ["evaluate_answer", "research_rag", "retrieve_chunks", "search_arxiv"]}
+{"check": "liveness", "status": "ok", "tools": ["evaluate_answer", "research_rag", "search_arxiv"]}
 ```
 
 ### `GET /ready`
 Probes the configured ArXiv, evaluator, and RAG `/health` endpoints concurrently.
+The response includes each service and the answer capabilities available now.
+It returns HTTP 200 when at least one answer backend is reachable, and HTTP 503
+when both answer backends are unavailable. An unavailable evaluator marks the
+gateway `degraded` but does not block answering.
 
 ```json
-{"check": "readiness", "status": "ready", "services": {"arxiv": "up", "evaluator": "up", "rag": "up"}}
+{"check":"readiness","status":"degraded","services":{"arxiv":"up","evaluator":"down","rag":"up"},"capabilities":{"answers":true,"arxiv":true,"research_rag":true}}
 ```
 
-A dependency that returns a non-200 response is reported as `degraded`; an
-unreachable one is `down`. Either makes the endpoint return `503`.
+An HTTP failure from a service is reported as `degraded`; an unreachable
+service is `down`. The evaluator entry reflects its `/health` endpoint, so it
+shows process reachability rather than confirming its embedding dependency is
+ready. A real request reports evaluator availability through `evaluation_status`.
 
 ---
 
@@ -160,33 +166,35 @@ Measured on local machine (WSL2, CPU only):
 
 | Tool / Endpoint | Avg Latency | Min | Max | Faithfulness |
 |---|---|---|---|---|
-| `retrieve_chunks` | 113ms | 34ms | 525ms | — |
 | `evaluate_answer` | 3.3s | 2.5s | 4.6s | 1.00 |
 | `POST /plan` | 57s | 54s | 60s | 0.75 |
-| `POST /ask` (Groq) | 76s | 75s | 77s | 0.86 |
+| `POST /ask` (earlier Groq planner) | 76s | 75s | 77s | 0.86 |
 
-> These are historical measurements from the earlier retrieval-based flow. They have not been re-measured against the current ArXiv-only route and should not be used as current gateway performance claims.
+> These are historical measurements from an earlier flow. They have not been re-measured against the current two-backend route and should not be used as current gateway performance claims.
+
+[`scripts/benchmark.py`](scripts/benchmark.py) measures `/ask` end to end for
+both backends and writes the run data to /tmp/benchmark_results.json.
 
 ---
 
 ## Current Evaluation Flow
 
-The answer route attempts evaluation after a successful backend (ArXiv) search when answer and source context are available. It skips abstentions (backend sentinels, `insufficient_context`, or RAG `REJECT`). Evaluation is diagnostic evidence support, not proof that an answer is factually correct. An unavailable or skipped evaluation is not stored as a zero score.
+The answer route attempts evaluation after a successful selected backend call when answer and source context are available. It skips abstentions (backend sentinels, `insufficient_context`, or RAG `REJECT`). Evaluation is diagnostic evidence support, not proof that an answer is factually correct. An unavailable or skipped evaluation is not stored as a zero score.
 
 ### `evaluation_status` semantics
 
-`evaluation_status` is always present and is never inferred from a score — a legitimate `0` and "not evaluated" are different states. Every `/ask` plan places an evaluation step after the answering step; what differs is how that step ends:
+`evaluation_status` is always present and is never inferred from a score — a legitimate `0` and "not evaluated" are different states. Each answer flow places an evaluation step after the answering step; what differs is how that step ends:
 
 | Status | Meaning | Triggers |
 |---|---|---|
-| `skipped` | By design, there was nothing to evaluate (or evaluation was not part of the executed plan). No score is returned. | (1) the answering step produced no answer/context; (2) the backend **abstained** — a gate rejection is an intentional outcome, not a failure; (3) the executed plan carried no evaluation step (e.g. a Groq-routed plan without it). |
+| `skipped` | By design, there was nothing to evaluate. No score is returned. | The answering step produced no answer/context, or the backend **abstained** — a gate rejection is an intentional outcome, not a failure. |
 | `unavailable` | Evaluation was planned, but the evaluator could not produce a trustworthy score. **The answer stays valid** — `failure_type` is not altered. | Evaluator unreachable or exceeding its timeout (default 120s), non-200 response, malformed body, or a success response without a parseable score. |
 | `completed` | The evaluator ran and returned a valid score. | `evaluation.score` is filled, with optional `failure_mode` (`none`, `unsupported_claims`, `insufficient_context`) and `evaluator_version`. |
 
 Worked example (live workspace behavior): an `/ask` with `backend: research_rag` whose quality gate rejects the generated text returns `decision: "abstain"` together with `evaluation_status: "skipped"` — correct, because an abstention has nothing to grade and is not an error.
 
 ```
-Query → search_arxiv → answer + source context → evaluate_answer (when possible)
+Query → selected backend → answer + source context → evaluate_answer (when possible)
                                                      │
                                         status + optional score in response
                                                      │
@@ -217,11 +225,10 @@ mcp-gateway/
 │   ├── tools/
 │   │   ├── arxiv_contract.go   — typed ArXiv response + evidence mapping
 │   │   ├── evaluate_contract.go— typed evaluator response
-│   │   ├── search_arxiv.go     — ArXiv adapter (active answer backend)
-│   │   ├── retrieve_chunks.go  — legacy adapter; downstream contract unavailable
+│   │   ├── search_arxiv.go     — ArXiv answer adapter
+│   │   ├── research_rag.go     — RAG `/generate` answer adapter
 │   │   └── evaluate_answer.go  — evaluator adapter
 │   ├── planner/                — plan types and sequential execution
-│   ├── orchestrator/           — optional Groq plan generation
 │   └── store/                  — asynchronous evaluation persistence
 ├── scripts/
 │   ├── demo.sh                 — start gateway + exercise endpoints (make demo)
@@ -239,19 +246,14 @@ mcp-gateway/
 **1. Evaluation status is explicit**
 The current plan attempts evaluation when answer and source context are available. An unavailable or skipped evaluation does not invalidate a backend answer and does not produce a fake zero score.
 
-**2. Groq as planner, not generator**  
-Groq is only used for *deciding which tools to call* — not for generating the answer. This keeps the system cost-efficient and the answers grounded in retrieved context.
+**2. Keep planning deterministic**
+The request's selected backend maps to one answer adapter and one evaluator step. This keeps routing predictable and removes an external planner call from the critical path.
 
-**3. Fallback chain**  
-`Groq plan → deterministic plan`. If Groq is unavailable, the key is missing, or
-the returned plan contains no usable answer step, the gateway falls back to the
-deterministic per-backend plan. There is no per-tool fallback below that:
-a backend failure is reported, not papered over.
+**3. Report backend failure directly**
+The gateway does not switch to another answer backend after a failure. It returns the selected backend's failure so the caller can make an informed retry or routing decision.
 
 **4. One backend per request**  
-`backendTools` maps each backend to the tools it may call, so a plan can only
-contain steps from one list. This is what prevents an ArXiv answer from being
-scored against chunks retrieved from a different backend.
+`planForBackend` selects exactly one answer tool, preventing an ArXiv answer from being scored against evidence retrieved by RAG, or vice versa.
 
 **5. Polyglot by necessity, not trend**  
 Go handles routing, concurrency, and low-latency HTTP. Python handles ML — embeddings, retrieval, evaluation. Each language does what it's best at.
@@ -265,13 +267,10 @@ defaults. See [`.env.example`](.env.example) for the annotated list — the two
 files are kept in sync by a test, so neither can drift silently.
 
 ```bash
-# Orchestration
-GROQ_API_KEY=gsk_...              # without a key, /ask uses the deterministic plan
-
 # Persistence
 POSTGRES_DSN=host=localhost ...  # unset or empty → local default DSN; if the DB is unreachable, logging is skipped (answering unaffected)
 
-# Service addresses (gateway appends /query, /evaluate)
+# Service addresses (adapter paths: /query, /generate, /evaluate)
 ARXIV_SERVICE_URL=http://localhost:8080
 EVAL_SERVICE_URL=http://localhost:8002
 RAG_SERVICE_URL=http://rag-api:8000
@@ -291,9 +290,8 @@ RAG_MAX_RESPONSE_BYTES=4194304
 Invalid durations or sizes fail startup with an error naming the variable,
 rather than silently falling back.
 
-`RAG_SERVICE_URL` is consumed by the active `research_rag` answer route and by
-the low-level `retrieve_chunks` tool. `retrieve_chunks` remains registered for
-visibility, but its downstream contract is not used by `/ask` or `/plan`.
+`RAG_SERVICE_URL` is consumed by the active `research_rag` adapter, which calls
+the supported `POST /generate` endpoint.
 
 ---
 

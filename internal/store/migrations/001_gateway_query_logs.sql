@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS gateway_query_logs (
 
     backend            TEXT,
     backend_model      TEXT,
-    orchestrator       TEXT,   -- groq | rule-based
+    orchestrator       TEXT,   -- rule-based planner
 
     decision           TEXT,   -- answer | abstain | error
     failure_type       TEXT,   -- none | backend_error | ...

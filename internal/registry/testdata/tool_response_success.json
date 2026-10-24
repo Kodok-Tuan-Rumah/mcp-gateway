@@ -1,5 +1,5 @@
 {
-  "tool_name": "retrieve_chunks",
+  "tool_name": "example_tool",
   "trace_id": "trace-1",
   "success": true,
   "data": {

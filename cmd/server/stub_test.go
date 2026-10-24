@@ -61,17 +61,6 @@ func newTestRegistry() *registry.Registry {
 		}
 	})
 
-	reg.Register(toolRetrieveChunks, func(_ context.Context, req registry.ToolRequest) registry.ToolResponse {
-		return registry.ToolResponse{
-			ToolName: req.ToolName,
-			TraceID:  req.TraceID,
-			Success:  true,
-			Data: map[string]interface{}{
-				"results": []interface{}{map[string]interface{}{"text": "chunk lokal"}},
-			},
-		}
-	})
-
 	reg.Register(toolEvaluateAnswer, func(_ context.Context, req registry.ToolRequest) registry.ToolResponse {
 		return registry.ToolResponse{
 			ToolName: req.ToolName,

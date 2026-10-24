@@ -31,7 +31,7 @@ func TestNullIfEmpty(t *testing.T) {
 	if got := nullIfEmpty(""); got != nil {
 		t.Errorf("string kosong harus jadi nil, dapat %#v", got)
 	}
-	if got := nullIfEmpty("groq"); got != "groq" {
+	if got := nullIfEmpty("rule-based"); got != "rule-based" {
 		t.Errorf("string isi harus tetap utuh, dapat %#v", got)
 	}
 }

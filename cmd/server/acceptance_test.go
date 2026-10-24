@@ -20,7 +20,6 @@ type arxivTestRequest struct {
 func TestAcceptance_ArxivAdapterThroughAskAndPlan(t *testing.T) {
 	for _, route := range []string{"/plan", "/ask"} {
 		t.Run(route, func(t *testing.T) {
-			t.Setenv("GROQ_API_KEY", "")
 			downstreamRequests := make(chan arxivTestRequest, 1)
 			arxiv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/query" || r.Method != http.MethodPost {
