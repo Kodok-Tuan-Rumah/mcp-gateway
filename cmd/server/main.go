@@ -13,6 +13,7 @@ import (
 
 	"github.com/malikimayzar/mcp-gateway/internal/config"
 	"github.com/malikimayzar/mcp-gateway/internal/logging"
+	"github.com/malikimayzar/mcp-gateway/internal/mcp"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
 	"github.com/malikimayzar/mcp-gateway/internal/tools"
@@ -32,11 +33,19 @@ func main() {
 
 	reg := newRegistry(cfg)
 
+	// Initialize MCP server
+	mcpServer := mcp.NewServer(mcp.ServerInfo{
+		Name:    "mcp-gateway",
+		Version: "1.0.0",
+	})
+	mcp.RegisterGatewayTools(mcpServer, cfg)
+
 	logger.Info("MCP Gateway starting", logging.Fields{
 		"listen_address": cfg.ListenAddress,
 		"postgres_dsn":    maskDSN(cfg.PostgresDSN),
+		"mcp_enabled":     true,
 	})
-	if err := http.ListenAndServe(cfg.ListenAddress, newRouterWithConfig(reg, cfg)); err != nil {
+	if err := http.ListenAndServe(cfg.ListenAddress, newRouterWithConfigAndMCP(reg, cfg, mcpServer)); err != nil {
 		logger.Error("Server failed to start", logging.Fields{"error": err.Error()})
 		log.Fatal(err)
 	}

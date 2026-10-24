@@ -20,6 +20,7 @@ import (
 
 	"github.com/malikimayzar/mcp-gateway/internal/api"
 	"github.com/malikimayzar/mcp-gateway/internal/config"
+	"github.com/malikimayzar/mcp-gateway/internal/mcp"
 	"github.com/malikimayzar/mcp-gateway/internal/planner"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
@@ -79,6 +80,11 @@ func newRouter(reg *registry.Registry) http.Handler {
 // newRouterWithConfig builds the production router from one startup
 // configuration. newRouter remains a default-config helper for focused tests.
 func newRouterWithConfig(reg *registry.Registry, cfg config.Config) http.Handler {
+	return newRouterWithConfigAndMCP(reg, cfg, nil)
+}
+
+// newRouterWithConfigAndMCP builds the router with optional MCP server support
+func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpServer *mcp.Server) http.Handler {
 	r := chi.NewRouter()
 
 	// RequestID harus paling awal: middleware dijalankan berurutan, jadi kalau
@@ -94,6 +100,11 @@ func newRouterWithConfig(reg *registry.Registry, cfg config.Config) http.Handler
 	r.Post("/tool", handleTool(reg, cfg))
 	r.Post("/plan", handlePlan(reg, cfg))
 	r.Post("/ask", handleAsk(reg, cfg))
+
+	// Add MCP endpoint if server is provided
+	if mcpServer != nil {
+		r.Handle("/mcp", mcp.HandleMCP(mcpServer))
+	}
 
 	return r
 }
