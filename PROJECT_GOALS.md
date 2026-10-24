@@ -106,7 +106,7 @@ These are current source-level or operational gaps, not benchmark results:
 4. ArXiv `sources[]` and RAG `retrieved_chunks[]` are normalized into public `evidence[]` by typed backend adapters; response provenance is returned.
 5. The evaluator API returns `evaluator_version` and claim counts, and the gateway maps them. `ground_truth` is optional; the online short-answer path uses its conservative fallback when absent.
 6. All three downstream base URLs and timeouts are configurable. Container deployments need a reachable `OLLAMA_HOST` for evaluator embeddings.
-7. `/ready` reports ArXiv and RAG answer capabilities independently and returns HTTP 200 when either backend is reachable. Evaluator failure is degraded but does not block answers. The evaluator probe checks its `/health` endpoint only; readiness of its embedding dependency still needs a reliable signal from `llm-eval-framework`.
+7. `/ready` reports ArXiv and RAG answer capabilities independently and returns HTTP 200 when either backend is reachable. Evaluator failure is degraded but does not block answers. The evaluator probe checks its `/ready` endpoint; `capabilities.evaluation` reflects embedding readiness, and `status=not_ready` is returned only when both answer backends are down.
 
 Treat the remaining source-level gaps as release gates; runtime verification is separate.
 

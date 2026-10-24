@@ -21,30 +21,35 @@ func readyRouter(t *testing.T, arxivURL, evaluatorURL, ragURL string) *httptest.
 	return httptest.NewServer(newRouterWithConfig(newTestRegistry(), cfg))
 }
 
-func serviceWithHealthStatus(t *testing.T, status int) *httptest.Server {
+func serviceWithStatusAtPath(t *testing.T, wantPath string, status int) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
-			t.Errorf("unexpected readiness path: %s", r.URL.Path)
+		if r.URL.Path != wantPath {
+			t.Errorf("unexpected readiness path: %s, want %s", r.URL.Path, wantPath)
 		}
 		w.WriteHeader(status)
 	}))
 }
 
+func healthyService(t *testing.T, wantPath string) *httptest.Server {
+	t.Helper()
+	return serviceWithStatusAtPath(t, wantPath, http.StatusOK)
+}
+
 func unavailableServiceURL(t *testing.T) string {
 	t.Helper()
-	server := serviceWithHealthStatus(t, http.StatusOK)
+	server := healthyService(t, "/health")
 	url := server.URL
 	server.Close()
 	return url
 }
 
 func TestReady_AllDependenciesUp(t *testing.T) {
-	arxiv := serviceWithHealthStatus(t, http.StatusOK)
+	arxiv := healthyService(t, "/health")
 	defer arxiv.Close()
-	evaluator := serviceWithHealthStatus(t, http.StatusOK)
+	evaluator := healthyService(t, "/ready")
 	defer evaluator.Close()
-	rag := serviceWithHealthStatus(t, http.StatusOK)
+	rag := healthyService(t, "/health")
 	defer rag.Close()
 
 	ts := readyRouter(t, arxiv.URL, evaluator.URL, rag.URL)
@@ -72,19 +77,19 @@ func TestReady_AllDependenciesUp(t *testing.T) {
 	if !ok {
 		t.Fatalf("capabilities must be an object, got %T", body["capabilities"])
 	}
-	for _, name := range []string{"answers", "arxiv", "research_rag"} {
+	for _, name := range []string{"answers", "evaluation", "arxiv", "research_rag"} {
 		if capabilities[name] != true {
 			t.Errorf("expected capability %s=true, got %v", name, capabilities[name])
 		}
 	}
 }
 
-func TestReady_EvaluatorUnavailableDoesNotBlockAnswers(t *testing.T) {
-	arxiv := serviceWithHealthStatus(t, http.StatusOK)
+func TestReady_EvaluatorDownIsDegraded(t *testing.T) {
+	arxiv := healthyService(t, "/health")
 	defer arxiv.Close()
-	evaluator := serviceWithHealthStatus(t, http.StatusServiceUnavailable)
+	evaluator := serviceWithStatusAtPath(t, "/ready", http.StatusServiceUnavailable)
 	defer evaluator.Close()
-	rag := serviceWithHealthStatus(t, http.StatusOK)
+	rag := healthyService(t, "/health")
 	defer rag.Close()
 
 	ts := readyRouter(t, arxiv.URL, evaluator.URL, rag.URL)
@@ -107,12 +112,15 @@ func TestReady_EvaluatorUnavailableDoesNotBlockAnswers(t *testing.T) {
 	if capabilities["answers"] != true {
 		t.Errorf("answers must remain ready when evaluation is down, got %v", capabilities["answers"])
 	}
+	if capabilities["evaluation"] != false {
+		t.Errorf("evaluation must be false when evaluator is down, got %v", capabilities["evaluation"])
+	}
 }
 
-func TestReady_OneAnswerBackendDownStillServesOther(t *testing.T) {
-	evaluator := serviceWithHealthStatus(t, http.StatusOK)
+func TestReady_OneAnswerBackendDownIsDegraded(t *testing.T) {
+	evaluator := healthyService(t, "/ready")
 	defer evaluator.Close()
-	rag := serviceWithHealthStatus(t, http.StatusOK)
+	rag := healthyService(t, "/health")
 	defer rag.Close()
 
 	ts := readyRouter(t, unavailableServiceURL(t), evaluator.URL, rag.URL)
@@ -136,8 +144,8 @@ func TestReady_OneAnswerBackendDownStillServesOther(t *testing.T) {
 	}
 }
 
-func TestReady_NoAnswerBackendAvailableReturns503(t *testing.T) {
-	evaluator := serviceWithHealthStatus(t, http.StatusOK)
+func TestReady_NoAnswerBackendIsNotReady(t *testing.T) {
+	evaluator := healthyService(t, "/ready")
 	defer evaluator.Close()
 
 	ts := readyRouter(t, unavailableServiceURL(t), evaluator.URL, unavailableServiceURL(t))
@@ -148,11 +156,47 @@ func TestReady_NoAnswerBackendAvailableReturns503(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 when both answer backends are down, got %d: %v", resp.StatusCode, body)
 	}
-	if body["status"] != "degraded" {
-		t.Errorf("expected status=degraded, got %v", body["status"])
+	if body["status"] != "not_ready" {
+		t.Errorf("expected status=not_ready, got %v", body["status"])
 	}
 	capabilities := body["capabilities"].(map[string]interface{})
 	if capabilities["answers"] != false {
 		t.Errorf("answers must be false, got %v", capabilities["answers"])
+	}
+}
+
+func TestReady_EvaluatorProbeUsesReadyPath(t *testing.T) {
+	arxiv := healthyService(t, "/health")
+	defer arxiv.Close()
+	evaluator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ready" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer evaluator.Close()
+	rag := healthyService(t, "/health")
+	defer rag.Close()
+
+	ts := readyRouter(t, arxiv.URL, evaluator.URL, rag.URL)
+	defer ts.Close()
+
+	resp := get(t, ts, "/ready")
+	body := decodeJSON(t, resp)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %v", resp.StatusCode, body)
+	}
+	if body["status"] != "ready" {
+		t.Errorf("expected status=ready, got %v", body["status"])
+	}
+	services := body["services"].(map[string]interface{})
+	if services["evaluator"] != "up" {
+		t.Errorf("expected evaluator=up when /ready succeeds, got %v", services["evaluator"])
+	}
+	capabilities := body["capabilities"].(map[string]interface{})
+	if capabilities["evaluation"] != true {
+		t.Errorf("expected evaluation=true, got %v", capabilities["evaluation"])
 	}
 }

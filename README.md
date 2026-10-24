@@ -80,8 +80,9 @@ workspace root), which starts the four repositories together. This repository's
 `make demo` still runs the gateway standalone without downstream services.
 
 A healthy `/health` means the process is alive. Use `/ready` for dependency
-state: it probes the configured ArXiv, evaluator, and RAG endpoints concurrently
-and returns `503` when any probe is not `up`.
+state: it probes the configured ArXiv, evaluator (`/ready`), and RAG endpoints
+concurrently. It returns `503` only when both answer backends are down; an
+unavailable evaluator is `degraded`, not a blocker.
 
 ---
 
@@ -143,20 +144,22 @@ curl -X POST http://localhost:8090/tool \
 ```
 
 ### `GET /ready`
-Probes the configured ArXiv, evaluator, and RAG `/health` endpoints concurrently.
-The response includes each service and the answer capabilities available now.
-It returns HTTP 200 when at least one answer backend is reachable, and HTTP 503
-when both answer backends are unavailable. An unavailable evaluator marks the
-gateway `degraded` but does not block answering.
+Probes the ArXiv and RAG `/health` endpoints plus the evaluator `/ready`
+endpoint concurrently. The response reports each service and separates answer
+capability from evaluation capability. It returns HTTP 200 when at least one
+answer backend is reachable, and HTTP 503 only when both answer backends are
+unavailable. An unavailable evaluator marks the gateway `degraded` with
+`capabilities.evaluation=false` but does not block answering.
 
 ```json
-{"check":"readiness","status":"degraded","services":{"arxiv":"up","evaluator":"down","rag":"up"},"capabilities":{"answers":true,"arxiv":true,"research_rag":true}}
+{"check":"readiness","status":"degraded","services":{"arxiv":"up","evaluator":"down","rag":"up"},"capabilities":{"answers":true,"evaluation":false,"arxiv":true,"research_rag":true}}
 ```
 
-An HTTP failure from a service is reported as `degraded`; an unreachable
-service is `down`. The evaluator entry reflects its `/health` endpoint, so it
-shows process reachability rather than confirming its embedding dependency is
-ready. A real request reports evaluator availability through `evaluation_status`.
+When both answer backends are unavailable the body reports `status:"not_ready"`
+with HTTP 503. An HTTP failure from a service is reported as `degraded`; an
+unreachable service is `down`. The evaluator entry reflects its `/ready`
+endpoint, so it confirms the embedding dependency is usable rather than only
+that the process is alive.
 
 ---
 

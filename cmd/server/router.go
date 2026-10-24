@@ -128,6 +128,7 @@ func handleReady(cfg config.Config) http.HandlerFunc {
 	type dependency struct {
 		name   string
 		apiURL string
+		path   string
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -135,9 +136,9 @@ func handleReady(cfg config.Config) http.HandlerFunc {
 		defer cancel()
 
 		dependencies := []dependency{
-			{"arxiv", cfg.Arxiv.BaseURL},
-			{"evaluator", cfg.Evaluator.BaseURL},
-			{"rag", cfg.RAG.BaseURL},
+			{"arxiv", cfg.Arxiv.BaseURL, "/health"},
+			{"evaluator", cfg.Evaluator.BaseURL, "/ready"},
+			{"rag", cfg.RAG.BaseURL, "/health"},
 		}
 
 		checks := make(map[string]string, len(dependencies))
@@ -150,7 +151,7 @@ func handleReady(cfg config.Config) http.HandlerFunc {
 				defer wg.Done()
 				probeCtx, probeCancel := context.WithTimeout(ctx, 3*time.Second)
 				defer probeCancel()
-				status := checkService(probeCtx, dep.apiURL)
+				status := checkService(probeCtx, dep.apiURL, dep.path)
 				mu.Lock()
 				checks[dep.name] = status
 				mu.Unlock()
@@ -167,6 +168,7 @@ func handleReady(cfg config.Config) http.HandlerFunc {
 		}
 		arxivReady := checks["arxiv"] == "up"
 		ragReady := checks["rag"] == "up"
+		evaluatorReady := checks["evaluator"] == "up"
 		answersReady := arxivReady || ragReady
 
 		status := http.StatusOK
@@ -174,26 +176,29 @@ func handleReady(cfg config.Config) http.HandlerFunc {
 			status = http.StatusServiceUnavailable
 		}
 
+		bodyStatus := "ready"
+		if !answersReady {
+			bodyStatus = "not_ready"
+		} else if !allServicesUp {
+			bodyStatus = "degraded"
+		}
+
 		writeJSON(w, status, map[string]interface{}{
-			"status": func() string {
-				if allServicesUp {
-					return "ready"
-				}
-				return "degraded"
-			}(),
-			"check": "readiness",
+			"status":   bodyStatus,
+			"check":    "readiness",
 			"services": checks,
 			"capabilities": map[string]bool{
-				"answers":       answersReady,
-				"arxiv":         arxivReady,
-				"research_rag":  ragReady,
+				"answers":      answersReady,
+				"evaluation":   evaluatorReady,
+				"arxiv":        arxivReady,
+				"research_rag": ragReady,
 			},
 		})
 	}
 }
 
-func checkService(ctx context.Context, baseURL string) string {
-	endpoint := strings.TrimRight(baseURL, "/") + "/health"
+func checkService(ctx context.Context, baseURL, path string) string {
+	endpoint := strings.TrimRight(baseURL, "/") + path
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return "down"

@@ -269,5 +269,5 @@ keduanya tidak bisa berasal dari backend berbeda.
 |---|---|
 | Adapter `retrieve_chunks` | `rag-research` tidak punya `/retrieve`; `research_rag` menjawab via `/generate` |
 | Auto-retry | Tidak aktif pada jalur jawaban; kebijakan retry masih perlu keputusan operasional |
-| Readiness check | `/health` adalah liveness; `/ready` melaporkan kapabilitas ArXiv/RAG dan mengembalikan 200 jika setidaknya satu backend jawaban tersedia. Evaluator bersifat opsional untuk menjawab |
+| Readiness policy | `/health` adalah liveness; `/ready` memprobe ArXiv/RAG `/health` dan evaluator `/ready`, lalu mengembalikan 200 jika setidaknya satu backend jawaban tersedia (503 hanya jika keduanya down). `capabilities.answers` dan `capabilities.evaluation` membedakan backend jawaban wajib dari evaluator opsional |
 | `X-Request-ID` ke downstream | Belum dipropagasikan oleh adapter; termasuk gate observability |

@@ -39,7 +39,7 @@ POST /ask or /plan
   → execute its deterministic answer step followed by evaluation when applicable
   → executor normalizes answer + evidence and optionally calls evaluator
   → map result to the public response; persist only a valid evaluation asynchronously
-  → GET /ready probes ArXiv, evaluator, and RAG concurrently
+  → GET /ready probes ArXiv/RAG `/health` and evaluator `/ready` concurrently
 ```
 
 The active answer path is wired end to end at source level:
@@ -49,7 +49,7 @@ The active answer path is wired end to end at source level:
 * ArXiv `sources[]` and RAG `retrieved_chunks[]` are normalized into structured `evidence[]` by their typed adapters. The evaluator receives the same answer and evidence.
 * Evaluation result maps `evaluation_status`, score, failure mode, evaluator version, `supported_claims`, and `total_claims`. An evaluator outage remains `unavailable`; it is never converted to score 0.
 * The unsupported `retrieve_chunks` adapter has been removed because `rag-research` does not expose `/retrieve`. The active `research_rag` adapter calls `POST /generate`.
-* All three downstream base URLs and timeouts are configurable. `/ready` reports ArXiv and RAG answer capabilities separately and returns 200 if either answer backend is reachable; evaluator failure is reported as degraded but does not block answers. The evaluator probe currently checks only its `/health` endpoint, not embedding readiness.
+* All three downstream base URLs and timeouts are configurable. `/ready` reports ArXiv and RAG answer capabilities separately and returns 200 if either answer backend is reachable; evaluator failure is reported as degraded but does not block answers. The evaluator probe calls its `/ready` endpoint, so `capabilities.evaluation` reflects embedding readiness rather than process liveness.
 * The workspace root compose supplies `ARXIV_SERVICE_URL`, `EVAL_SERVICE_URL`, `RAG_SERVICE_URL`, and `OLLAMA_HOST`; this repository itself still has no Compose file.
 
 Runtime verification (containers, monitoring targets, and smoke test) is tracked separately from these source-level statements.
