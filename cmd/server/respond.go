@@ -55,6 +55,18 @@ func applyDecision(resp *api.GatewayResponse, result planner.ExecutionResult) {
 		resp.Decision = api.DecisionError
 		resp.FailureType = classifyBackendError(answerStep.Error)
 
+	case result.FailureType == api.FailureProviderError ||
+		result.FailureType == api.FailureSanityCheck ||
+		result.FailureType == api.FailureEmptyOutput:
+		// Kegagalan pipeline backend BUKAN abstention: jawaban sentinel yang
+		// menyertainya tidak dipercaya sebagai jawaban. Publik: decision=error
+		// (HTTP 502) dengan failure_type dan kind dari backend — mapping ini
+		// perubahan kontrak sadar, lihat docs/api-contract.md.
+		resp.Answer = ""
+		resp.Decision = api.DecisionError
+		resp.FailureType = result.FailureType
+		resp.ProviderErrorKind = result.ProviderErrorKind
+
 	case strings.TrimSpace(result.Answer) == "":
 		// Response tanpa jawaban dianggap abstain; backend saat ini juga
 		// memakai sentinel eksplisit untuk keadaan yang sama.

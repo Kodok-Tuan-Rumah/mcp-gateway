@@ -315,6 +315,81 @@ func TestAsk_RejectsOversizedBody(t *testing.T) {
 	}
 }
 
+// ───────────────────── provider error bukan abstention ─────────────────────
+//
+// rag-research (R1) melaporkan kegagalan provider (429, koneksi, auth, JSON
+// invalid) dengan failure_type=provider_error + provider_error_kind. Gateway
+// harus memetakan itu ke decision=error (bukan abstain). Perubahan kontrak
+// publik: response provider error HTTP 502 — lihat docs/api-contract.md.
+func providerErrorTestRegistry(t *testing.T) *registry.Registry {
+	reg := registry.New()
+	reg.Register(toolResearchRAG, func(_ context.Context, req registry.ToolRequest) registry.ToolResponse {
+		return registry.ToolResponse{
+			ToolName: req.ToolName,
+			TraceID:  req.TraceID,
+			Success:  true,
+			Data: map[string]interface{}{
+				"answer":              "INSUFFICIENT_CONTEXT",
+				"decision":            "REJECT",
+				"failure_type":        "provider_error",
+				"provider_error_kind": "rate_limit",
+				"model":               "test-model",
+				"confidence":          0.0,
+				"retrieved_chunks": []interface{}{
+					map[string]interface{}{"chunk_id": "c1", "doc_id": "d1", "text": "chunk A", "score": 0.5},
+				},
+				"latency_total_ms": 100.0,
+			},
+		}
+	})
+	reg.Register(toolEvaluateAnswer, func(_ context.Context, req registry.ToolRequest) registry.ToolResponse {
+		t.Error("evaluator must not score a provider-error sentinel answer")
+		return registry.ToolResponse{}
+	})
+	return reg
+}
+
+func TestResearchRAGProviderErrorMapsToDecisionError(t *testing.T) {
+	ts := newTestServer(providerErrorTestRegistry(t))
+	defer ts.Close()
+
+	for _, path := range []string{"/ask", "/plan"} {
+		resp := postJSON(t, ts, path, map[string]interface{}{
+			"backend": "research_rag",
+			"query":   "apa itu RAG?",
+		})
+		body := decodeJSON(t, resp)
+
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Errorf("%s: provider error harus 502, got %d (%v)", path, resp.StatusCode, body)
+		}
+		if body["decision"] != api.DecisionError {
+			t.Errorf("%s: decision = %v, want error", path, body["decision"])
+		}
+		if body["failure_type"] != api.FailureProviderError {
+			t.Errorf("%s: failure_type = %v, want provider_error", path, body["failure_type"])
+		}
+		if body["provider_error_kind"] != api.ProviderErrorRateLimit {
+			t.Errorf("%s: provider_error_kind = %v, want rate_limit", path, body["provider_error_kind"])
+		}
+	}
+}
+
+func TestProviderErrorResponseIs502(t *testing.T) {
+	ts := newTestServer(providerErrorTestRegistry(t))
+	defer ts.Close()
+
+	resp := postJSON(t, ts, "/ask", map[string]interface{}{
+		"backend": "research_rag",
+		"query":   "apa itu RAG?",
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("expected 502 untuk provider error, got %d", resp.StatusCode)
+	}
+}
+
 // ───────────────────── kontrak response dari /plan ─────────────────────
 
 func TestPlan_ReturnsGatewayContract(t *testing.T) {

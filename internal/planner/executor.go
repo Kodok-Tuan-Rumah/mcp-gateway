@@ -6,6 +6,7 @@ import (
 
 	"github.com/malikimayzar/mcp-gateway/internal/api"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
+	"github.com/malikimayzar/mcp-gateway/internal/tools"
 )
 
 // ExecutionResult adalah record internal eksekusi plan.
@@ -15,15 +16,21 @@ import (
 // PascalCase; jawaban dan metadata backend dipetakan ke kontrak publik melalui
 // api.GatewayResponse sebelum dikirim.
 type ExecutionResult struct {
-	Query     string
-	Steps     []StepResult
-	Answer    string
-	Context   string
-	Evidence  []api.Evidence
-	Model     string
-	Latency   *api.StageLatency
-	Score     float64
+	Query    string
+	Steps    []StepResult
+	Answer   string
+	Context  string
+	Evidence []api.Evidence
+	Model    string
+	Latency  *api.StageLatency
+	Score    float64
+
 	Abstained bool
+	// FailureType dipertahankan dari backend yang menjawab ("" berarti backend
+	// tidak melaporkan kegagalan). Isinya dipetakan ke kontrak publik di
+	// cmd/server/respond.go — bukan di sini.
+	FailureType       string
+	ProviderErrorKind string
 }
 
 type StepResult struct {
@@ -58,7 +65,13 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 				continue
 			}
 			switch {
-			case result.Abstained, strings.TrimSpace(answer) == api.ArxivAbstainText:
+			case result.Abstained,
+				strings.TrimSpace(answer) == api.ArxivAbstainText,
+				// Kegagalan backend bukan abstention, tetapi jawaban sentinel
+				// yang menyertainya juga bukan jawaban yang bisa dinilai.
+				result.FailureType == api.FailureProviderError,
+				result.FailureType == api.FailureSanityCheck,
+				result.FailureType == api.FailureEmptyOutput:
 				result.Steps = append(result.Steps, StepResult{
 					ToolName: step.ToolName,
 					Success:  false,
@@ -93,6 +106,17 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 		// keduanya punya kontrak titik-ketik yang sama (AnswerText/ModelName/
 		// Evidence/Latency/IsAbstention).
 		if step.ToolName == "search_arxiv" || step.ToolName == "research_rag" {
+			// ResearchRAGResponse membawa taksonomi kegagalan backend sebagai
+			// field; ArxivQueryResponse tidak melaporkannya. Type switch dipakai
+			// karena field tidak bisa diminta lewat interface ad-hoc.
+			if rag, ok := resp.TypedResult.(tools.ResearchRAGResponse); ok {
+				if rag.FailureType != "" {
+					result.FailureType = rag.FailureType
+				}
+				if rag.ProviderErrorKind != "" {
+					result.ProviderErrorKind = rag.ProviderErrorKind
+				}
+			}
 			if typed, ok := resp.TypedResult.(interface {
 				AnswerText() string
 				ModelName() string
@@ -116,18 +140,32 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 					result.Model = model
 				}
 				result.Evidence = evidenceFromToolData(resp.Data)
-				// Deteksi abstensi sama dengan ResearchRAGResponse.IsAbstention:
-				// decision REJECT (kontrak /ask) atau framing /generate
-				// (sentinel jawaban + failure_type dari backend).
-				if decision, ok := resp.Data["decision"].(string); ok && decision == "REJECT" {
-					result.Abstained = true
+				// failure_type disalin apa adanya untuk respond.go; klasifikasi
+				// abstensi mengikuti ResearchRAGResponse.IsAbstention: kegagalan
+				// operasional (provider_error/sanity_check/empty_output) BUKAN
+				// abstention walau decision REJECT atau answer sentinel.
+				failure, _ := resp.Data["failure_type"].(string)
+				failureClass := failure == api.FailureProviderError ||
+					failure == api.FailureSanityCheck ||
+					failure == api.FailureEmptyOutput
+				if !failureClass {
+					if decision, ok := resp.Data["decision"].(string); ok && decision == "REJECT" {
+						result.Abstained = true
+					}
+					if failure == api.FailureInsufficientContext || failure == api.FailureUnsupportedClaims {
+						result.Abstained = true
+					}
+					if ans, ok := resp.Data["answer"].(string); ok && ans == api.RAGAbstainText {
+						result.Abstained = true
+					}
 				}
-				if failure, ok := resp.Data["failure_type"].(string); ok &&
-					(failure == api.FailureInsufficientContext || failure == api.FailureUnsupportedClaims) {
-					result.Abstained = true
-				}
-				if ans, ok := resp.Data["answer"].(string); ok && ans == api.RAGAbstainText {
-					result.Abstained = true
+				if failure != "" {
+					result.FailureType = failure
+					if failure == api.FailureProviderError {
+						if kind, ok := resp.Data["provider_error_kind"].(string); ok {
+							result.ProviderErrorKind = kind
+						}
+					}
 				}
 			}
 			contextStr = evidenceContext(result.Evidence)

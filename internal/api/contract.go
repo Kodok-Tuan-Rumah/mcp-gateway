@@ -67,7 +67,22 @@ const (
 	FailureMalformedResponse     = "malformed_response"
 	FailureInsufficientContext   = "insufficient_context"
 	FailureUnsupportedClaims     = "unsupported_claims"
+	FailureProviderError         = "provider_error"
+	FailureSanityCheck           = "sanity_check"
+	FailureEmptyOutput           = "empty_output"
 	FailureEvaluationUnavailable = "evaluation_unavailable"
+)
+
+// ProviderErrorKind adalah penyebab spesifik di balik failure_type=provider_error.
+// Nilainya dipetakan apa adanya dari taksonomi rag-research; gateway tidak
+// menafsirkannya, hanya meneruskan.
+const (
+	ProviderErrorRateLimit     = "rate_limit"
+	ProviderErrorConnection    = "connection"
+	ProviderErrorAuth          = "auth"
+	ProviderErrorInvalidJSON   = "invalid_json"
+	ProviderErrorNotConfigured = "not_configured"
+	ProviderErrorUnknown       = "provider"
 )
 
 // EvaluationStatus: apakah jawaban benar-benar dinilai, dan kalau tidak,
@@ -188,6 +203,11 @@ type BackendAnswer struct {
 	ReflectionPassed       *bool    `json:"reflection_passed,omitempty"`
 	ReflectionScore        *float64 `json:"reflection_score,omitempty"`
 	UnsupportedClaimsCount *int     `json:"unsupported_claims_count,omitempty"`
+	// ProviderErrorKind hanya terisi bila FailureType == provider_error
+	// (rate_limit | connection | auth | invalid_json | not_configured |
+	// provider). Backends lain dan response RAG lama tidak melaporkannya,
+	// sehingga field ini absent dari JSON sampai backend mengirimnya.
+	ProviderErrorKind string `json:"provider_error_kind,omitempty"`
 }
 
 // EvaluationResult adalah hasil evaluasi opsional.

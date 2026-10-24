@@ -163,7 +163,37 @@ klaim atomik yang diekstrak. Ini heuristik eksperimental, bukan bukti kebenaran
 atau confidence yang terkalibrasi. Jika refleksi tidak dijalankan, ketiga field
 opsional tersebut dihilangkan.
 
-### 3.4 Evaluator tidak tersedia — kunci `"score": 0`
+### 3.4 Kegagalan provider `research_rag` — error, bukan abstensi
+
+Ketika `research_rag` gagal secara operasional (provider LLM tidak tersedia:
+429 rate limit, koneksi gagal, auth invalid, JSON response invalid), backend
+melaporkan `failure_type: "provider_error"` beserta `provider_error_kind`.
+Gateway memetakan ini ke **`decision: "error"` + HTTP 502** — bukan 200 abstain,
+karena menyembunyikan kegagalan operasional sebagai abstain kontekstual
+`INSUFFICIENT_CONTEXT` menyesatkan konsumen yang mengukur kualitas grounding.
+Jawaban sentinel dari backend dihapus; evaluasi tidak dijalankan.
+
+```json
+{
+  "request_id": "req-abc129",
+  "answer": "",
+  "backend": "research_rag",
+  "decision": "error",
+  "failure_type": "provider_error",
+  "provider_error_kind": "rate_limit",
+  "evaluation_status": "skipped",
+  "query": "apa itu RAG?"
+}
+```
+
+`provider_error_kind` mengikuti taksonomi backend (`rate_limit`, `connection`,
+`auth`, `invalid_json`, `not_configured`, `provider`) dan hanya ada bila
+`failure_type` = `provider_error`. Kategori kegagalan generation lain
+(`sanity_check`, `empty_output`) juga dilaporkan sebagai `decision: "error"`
+dengan alasan yang sama: itu kegagalan produksi jawaban, bukan keputusan
+abstensi yang sah.
+
+### 3.5 Evaluator tidak tersedia — kunci `"score": 0`
 
 ```json
 {
@@ -184,7 +214,7 @@ ketiadaan skor dinyatakan lewat `evaluation_status` — bukan lewat angka 0.
 secara struktural mustahil diserialisasi menjadi 0, dan
 `TestScore_NilIsAbsentNotZero` menjaganya.
 
-### 3.5 Error validasi / backend tidak tersedia
+### 3.6 Error validasi / backend tidak tersedia
 
 ```json
 {
@@ -195,13 +225,13 @@ secara struktural mustahil diserialisasi menjadi 0, dan
 }
 ```
 
-### 3.6 HTTP status
+### 3.7 HTTP status
 
 | Status | Kapan |
 |---|---|
 | `200` | `decision` = `answer` atau `abstain` (termasuk saat evaluator `unavailable`) |
 | `400` | Request tidak valid, atau `backend` tidak dikenal/tidak tersedia |
-| `502` | Backend menjawab gagal — `decision` = `error` |
+| `502` | Backend menjawab gagal — `decision` = `error` (termasuk `failure_type` = `provider_error`, `sanity_check`, `empty_output` dari backend) |
 
 Kegagalan evaluator **tidak** mengubah status HTTP: jawaban backend tetap
 berharga dan dikembalikan dengan 200.
@@ -211,7 +241,7 @@ status malformed/non-2xx/timeout, abstensi, serta jalur `/ask` dan `/plan`
 sampai response publik. Coverage pengujian ada di
 `internal/tools/search_arxiv_test.go` dan `cmd/server/acceptance_test.go`.
 
-### 3.7 Aturan field
+### 3.8 Aturan field
 
 | Field | Wajib? | Catatan |
 |---|---|---|
@@ -226,6 +256,7 @@ sampai response publik. Coverage pengujian ada di
 | `latency_ms` | tidak | Hanya kalau backend melaporkannya |
 | `evaluation.score` | tidak | **Hanya kalau benar-benar dinilai** |
 | `reflection_passed`, `reflection_score`, `unsupported_claims_count` | tidak | Hanya dari backend `research_rag` bila refleksi dijalankan; metrik lexical eksperimental |
+| `provider_error_kind` | tidak | Hanya bila `failure_type` = `provider_error`; dipetakan apa adanya dari `research_rag` |
 
 `evidence` dan `answer` berada dalam satu struct (`BackendAnswer`) supaya
 keduanya tidak bisa berasal dari backend berbeda.

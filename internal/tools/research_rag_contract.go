@@ -38,22 +38,28 @@ type ResearchRAGRequest struct {
 
 // ResearchRAGResponse is the verified response from POST /generate.
 type ResearchRAGResponse struct {
-	Query                  string             `json:"query"`
-	Answer                 string             `json:"answer"`
-	RetrievedChunks        []ResearchRAGChunk `json:"retrieved_chunks"`
-	RetrievalMethod        string             `json:"retrieval_method"`
-	LatencyRetrievalMs     float64            `json:"latency_retrieval_ms"`
-	LatencyGenerationMs    float64            `json:"latency_generation_ms"`
-	LatencyTotalMs         float64            `json:"latency_total_ms"`
-	Model                  string             `json:"model"`
-	Confidence             float64            `json:"confidence"`
-	Decision               string             `json:"decision"`
-	FailureType            string             `json:"failure_type,omitempty"`
-	GeneratorStatus        string             `json:"generator_status,omitempty"`
-	GeneratorConfidence    *float64           `json:"generator_confidence,omitempty"`
-	ReflectionPassed       *bool              `json:"reflection_passed,omitempty"`
-	ReflectionScore        *float64           `json:"reflection_score,omitempty"`
-	UnsupportedClaimsCount *int               `json:"unsupported_claims_count,omitempty"`
+	Query               string             `json:"query"`
+	Answer              string             `json:"answer"`
+	RetrievedChunks     []ResearchRAGChunk `json:"retrieved_chunks"`
+	RetrievalMethod     string             `json:"retrieval_method"`
+	LatencyRetrievalMs  float64            `json:"latency_retrieval_ms"`
+	LatencyGenerationMs float64            `json:"latency_generation_ms"`
+	LatencyTotalMs      float64            `json:"latency_total_ms"`
+	Model               string             `json:"model"`
+	Confidence          float64            `json:"confidence"`
+	Decision            string             `json:"decision"`
+	// FailureType is the backend's failure taxonomy (insufficient_context |
+	// unsupported_claims | provider_error | sanity_check | empty_output).
+	FailureType string `json:"failure_type,omitempty"`
+	// Specific cause when FailureType == provider_error (rate_limit |
+	// connection | auth | invalid_json | provider). Empty means the backend
+	// did not report a kind.
+	ProviderErrorKind      string   `json:"provider_error_kind,omitempty"`
+	GeneratorStatus        string   `json:"generator_status,omitempty"`
+	GeneratorConfidence    *float64 `json:"generator_confidence,omitempty"`
+	ReflectionPassed       *bool    `json:"reflection_passed,omitempty"`
+	ReflectionScore        *float64 `json:"reflection_score,omitempty"`
+	UnsupportedClaimsCount *int     `json:"unsupported_claims_count,omitempty"`
 }
 
 // ResearchRAGChunk is one retrieved chunk returned by rag-research.
@@ -118,6 +124,9 @@ func (r ResearchRAGResponse) ToolData() map[string]interface{} {
 	if r.FailureType != "" {
 		data["failure_type"] = r.FailureType
 	}
+	if r.ProviderErrorKind != "" {
+		data["provider_error_kind"] = r.ProviderErrorKind
+	}
 	if r.GeneratorStatus != "" {
 		data["generator_status"] = r.GeneratorStatus
 	}
@@ -146,11 +155,24 @@ func (r ResearchRAGResponse) Latency() *api.StageLatency {
 }
 
 // IsAbstention reports whether the backend decided the context is insufficient
-// to answer. rag-research frames abstention differently depending on the
-// endpoint: POST /ask answers with decision=="REJECT", while POST /generate
-// may keep decision=="GENERATE" and instead signal abstention through the
-// sentinel answer plus failure_type=="insufficient_context".
+// to answer — a legitimate outcome the caller can act on.
+//
+// rag-research frames abstention differently depending on the endpoint: POST
+// /ask answers with decision=="REJECT", while POST /generate may keep
+// decision=="GENERATE" and instead signal abstention through the sentinel
+// answer plus failure_type=="insufficient_context".
+//
+// Failure types outside the abstention taxonomy (provider_error, sanity_check,
+// empty_output) are operational failures, never abstentions, so they take
+// precedence over any decision or sentinel answer from the backend.
 func (r ResearchRAGResponse) IsAbstention() bool {
+	switch r.FailureType {
+	case api.FailureProviderError, api.FailureSanityCheck, api.FailureEmptyOutput:
+		// Kegagalan operasional backend: bukan abstention walau decision
+		// REJECT dan answer sentinel — memetakan ulang itu jadi abstain
+		// berarti menyembunyikan kegagalan dari pemanggil.
+		return false
+	}
 	if strings.TrimSpace(r.Decision) == "REJECT" {
 		return true
 	}
@@ -158,4 +180,10 @@ func (r ResearchRAGResponse) IsAbstention() bool {
 		return true
 	}
 	return strings.TrimSpace(r.Answer) == api.RAGAbstainText
+}
+
+// IsProviderError reports whether the backend reported an operational provider
+// failure (as opposed to a legitimate abstention or an answer).
+func (r ResearchRAGResponse) IsProviderError() bool {
+	return r.FailureType == api.FailureProviderError
 }

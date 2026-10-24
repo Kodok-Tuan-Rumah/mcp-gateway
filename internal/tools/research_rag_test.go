@@ -203,6 +203,103 @@ func TestResearchRAG_IsAbstention(t *testing.T) {
 	}
 }
 
+// TestResearchRAGProviderErrorIsNotAbstention: kegagalan provider (429,
+// koneksi, auth, JSON invalid) adalah error operasional, bukan abstention —
+// gateway tidak boleh melaporkannya sebagai "konteks kurang".
+func TestResearchRAGProviderErrorIsNotAbstention(t *testing.T) {
+	// rag API (R1) mengirim provider error dengan decision REJECT + answer
+	// sentinel; taksonomi failure_type harus mengalahkan keduanya.
+	for _, decision := range []string{"REJECT", "GENERATE"} {
+		perr := ResearchRAGResponse{
+			Decision:          decision,
+			Answer:            api.RAGAbstainText,
+			FailureType:       api.FailureProviderError,
+			ProviderErrorKind: api.ProviderErrorRateLimit,
+		}
+		if perr.IsAbstention() {
+			t.Errorf("provider_error (decision=%s) should not be abstention", decision)
+		}
+		if !perr.IsProviderError() {
+			t.Errorf("provider_error should report IsProviderError")
+		}
+	}
+}
+
+func TestSanityCheckIsNotAbstention(t *testing.T) {
+	sanity := ResearchRAGResponse{
+		Decision:    "REJECT",
+		Answer:      api.RAGAbstainText,
+		FailureType: api.FailureSanityCheck,
+	}
+	if sanity.IsAbstention() {
+		t.Errorf("sanity_check rejection should not be an abstention")
+	}
+	if sanity.IsProviderError() {
+		t.Errorf("sanity_check is not a provider error")
+	}
+}
+
+func TestEmptyOutputIsNotAbstention(t *testing.T) {
+	empty := ResearchRAGResponse{
+		Decision:    "REJECT",
+		Answer:      api.RAGAbstainText,
+		FailureType: api.FailureEmptyOutput,
+	}
+	if empty.IsAbstention() {
+		t.Errorf("empty_output failure should not be an abstention")
+	}
+}
+
+func TestInsufficientContextStillAbstains(t *testing.T) {
+	reject := ResearchRAGResponse{Decision: "REJECT"}
+	if !reject.IsAbstention() {
+		t.Errorf("decision REJECT should be abstention")
+	}
+	genAbstainFailure := ResearchRAGResponse{Decision: "GENERATE", FailureType: api.FailureInsufficientContext}
+	if !genAbstainFailure.IsAbstention() {
+		t.Errorf("GENERATE + failure_type insufficient_context should be abstention")
+	}
+	genUnsupportedClaims := ResearchRAGResponse{Decision: "GENERATE", FailureType: api.FailureUnsupportedClaims}
+	if !genUnsupportedClaims.IsAbstention() {
+		t.Errorf("GENERATE + failure_type unsupported_claims should be abstention")
+	}
+	genAbstainSentinel := ResearchRAGResponse{Decision: "GENERATE", Answer: api.RAGAbstainText}
+	if !genAbstainSentinel.IsAbstention() {
+		t.Errorf("GENERATE + sentinel answer should be abstention")
+	}
+}
+
+func TestProviderErrorKindIsPreserved(t *testing.T) {
+	wire := []byte(`{
+		"answer": "INSUFFICIENT_CONTEXT",
+		"retrieved_chunks": [],
+		"latency_total_ms": 100.0,
+		"model": "m",
+		"confidence": 0.0,
+		"decision": "REJECT",
+		"failure_type": "provider_error",
+		"provider_error_kind": "rate_limit"
+	}`)
+	if err := validateResearchRAGResponse(wire); err != nil {
+		t.Fatalf("wire with provider_error_kind rejected: %v", err)
+	}
+	var resp ResearchRAGResponse
+	if err := json.Unmarshal(wire, &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.FailureType != api.FailureProviderError || resp.ProviderErrorKind != api.ProviderErrorRateLimit {
+		t.Fatalf("kind lost in decode: %+v", resp)
+	}
+
+	data := resp.ToolData()
+	if kind, ok := data["provider_error_kind"].(string); !ok || kind != api.ProviderErrorRateLimit {
+		t.Errorf("ToolData provider_error_kind = %v, want rate_limit", data["provider_error_kind"])
+	}
+	if ft, ok := data["failure_type"].(string); !ok || ft != api.FailureProviderError {
+		t.Errorf("ToolData failure_type = %v, want provider_error", data["failure_type"])
+	}
+}
+
 func validResearchRAGRequest() registry.ToolRequest {
 	return registry.ToolRequest{
 		ToolName: "research_rag",

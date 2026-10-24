@@ -106,6 +106,54 @@ func TestExecute_RetrievedChunksCannotMixWithAnswerEvidence(t *testing.T) {
 	}
 }
 
+// TestExecute_ProviderErrorSkipsEvaluation memastikan dua hal: executor
+// menyalin failure_type/provider_error_kind dari response backend ke
+// ExecutionResult (provider error bukan abstention), dan evaluasi dilewati
+// karena jawaban sentinel bukan jawaban yang bisa dinilai.
+func TestExecute_ProviderErrorSkipsEvaluation(t *testing.T) {
+	reg := registry.New()
+	reg.Register("research_rag", func(_ context.Context, req registry.ToolRequest) registry.ToolResponse {
+		return registry.ToolResponse{
+			ToolName: req.ToolName,
+			Success:  true,
+			Data: map[string]interface{}{
+				"answer":              "INSUFFICIENT_CONTEXT",
+				"decision":            "REJECT",
+				"failure_type":        "provider_error",
+				"provider_error_kind": "rate_limit",
+				"retrieved_chunks": []interface{}{
+					map[string]interface{}{"text": "retrieved source context", "chunk_id": "c1", "doc_id": "d1"},
+				},
+			},
+		}
+	})
+	reg.Register("evaluate_answer", func(_ context.Context, _ registry.ToolRequest) registry.ToolResponse {
+		t.Fatal("evaluator must be skipped after a provider error")
+		return registry.ToolResponse{}
+	})
+
+	result := Execute(context.Background(), reg, Plan{
+		Query: "question",
+		Steps: []Step{
+			{ToolName: "research_rag"},
+			{ToolName: "evaluate_answer", Params: map[string]interface{}{}},
+		},
+	})
+
+	if result.Abstained {
+		t.Fatal("provider error must not be reported as abstention")
+	}
+	if result.FailureType != "provider_error" {
+		t.Errorf("FailureType = %q, want provider_error", result.FailureType)
+	}
+	if result.ProviderErrorKind != "rate_limit" {
+		t.Errorf("ProviderErrorKind = %q, want rate_limit", result.ProviderErrorKind)
+	}
+	if len(result.Steps) != 2 || !result.Steps[1].Skipped {
+		t.Errorf("evaluation step = %+v, want skipped", result.Steps[1])
+	}
+}
+
 func TestExecute_UnsupportedClaimsSkipsEvaluation(t *testing.T) {
 	reg := registry.New()
 	reg.Register("research_rag", func(_ context.Context, req registry.ToolRequest) registry.ToolResponse {
