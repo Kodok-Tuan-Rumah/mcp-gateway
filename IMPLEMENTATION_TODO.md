@@ -1,8 +1,9 @@
 # MCP Gateway — Active Roadmap
 
-> **Snapshot:** 2026-10-23. This is the single active implementation checklist.
+> **Snapshot:** 2026-10-24. This is the single active implementation checklist.
 > “Done” below means source-level implementation or recorded local evidence; it
-> does not imply a fresh runtime verification in this session.
+> does not imply a fresh runtime verification in this session unless the item
+> links to `docs/acceptance/phase-2-verification.md`.
 
 Project boundaries and current source behavior are in
 [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md). Public API shapes are in
@@ -23,10 +24,10 @@ historical; use this roadmap for current work.
 ## P0 — Make the shared deployment reproducible
 
 - [ ] Run the documented root Compose path from a clean environment and record image build, service health, migrations, volumes, and shutdown behavior.
-- [ ] Verify each Prometheus target and the Grafana dashboard against a live stack; record date and output.
-- [ ] Make the smoke check prove a fresh run wrote its own ArXiv query log (use a unique request/run identifier; do not rely only on a fixed query string).
+- [x] Verify each Prometheus target and the Grafana dashboard against a live stack; record date and output. Verified 2026-10-24: 5/5 targets up, `sum(up)=5`, p95 series present, dashboard 5 panels (workspace root `docs/acceptance/phase-2-verification.md`).
+- [x] Make the smoke check prove a fresh run wrote its own ArXiv query log (use a unique request/run identifier; do not rely only on a fixed query string). Verified 2026-10-24 with unique `RUN_ID`, `X-Request-ID`, and per-request log assertions.
 - [x] Define readiness per capability: `/ready` reports each answer backend and returns HTTP 200 if at least one is reachable; evaluator failure is degraded but does not block answers.
-- [ ] Test evaluator readiness after its embedding dependency is initialized, not only process liveness. The gateway currently probes evaluator `/health`; a deeper signal must come from `llm-eval-framework`.
+- [x] Test evaluator readiness after its embedding dependency is initialized, not only process liveness. The gateway now probes evaluator `/ready`; verified 2026-10-24 with `nomic-embed-text` warmed and `capabilities.evaluation=true`.
 
 ## P1 — Security, tracing, and operational behavior
 

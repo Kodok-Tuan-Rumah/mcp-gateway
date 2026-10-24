@@ -52,7 +52,7 @@ The active answer path is wired end to end at source level:
 * All three downstream base URLs and timeouts are configurable. `/ready` reports ArXiv and RAG answer capabilities separately and returns 200 if either answer backend is reachable; evaluator failure is reported as degraded but does not block answers. The evaluator probe calls its `/ready` endpoint, so `capabilities.evaluation` reflects embedding readiness rather than process liveness.
 * The workspace root compose supplies `ARXIV_SERVICE_URL`, `EVAL_SERVICE_URL`, `RAG_SERVICE_URL`, and `OLLAMA_HOST`; this repository itself still has no Compose file.
 
-Runtime verification (containers, monitoring targets, and smoke test) is tracked separately from these source-level statements.
+Runtime verification (containers, monitoring targets, and smoke test) was recorded on 2026-10-24 in the workspace root at `docs/acceptance/phase-2-verification.md`: 5/5 Prometheus targets, dashboard 5 panels, fresh-run smoke logs, and evaluator `/ready` all passed.
 
 ## RECOMMENDED FIRST RELEASE
 
