@@ -94,12 +94,29 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse response to determine appropriate HTTP status code
+	// Parse response to determine appropriate HTTP status code and format
 	var jsonResp JSONRPCResponse
 	status := http.StatusOK
 	if err := json.Unmarshal(response, &jsonResp); err == nil && jsonResp.Error != nil {
 		status = statusForError(jsonResp.Error.Code)
 	}
+
+	// Check if client prefers SSE
+	accept := r.Header.Get("Accept")
+	if strings.Contains(strings.ToLower(accept), "text/event-stream") {
+		// SSE format
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Del("Content-Length")
+		w.WriteHeader(status)
+		fmt.Fprintf(w, "event: message\ndata: %s\n\n", string(response))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return
+	}
+
 	writeRawJSON(w, status, response)
 }
 

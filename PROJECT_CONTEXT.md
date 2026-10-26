@@ -1,7 +1,7 @@
 # PROJECT: AI Research Workspace Gateway
 
 > **Project direction:** Keep the gateway thin. It routes research questions to a clearly owned backend and returns the answer with its evidence, provenance, and honest evaluation status. The four repositories remain independently useful services/projects; this workspace is not yet a verified single deployment.
-> **Source snapshot:** 2026-10-23. `PROJECT_GOALS.md` defines intended boundaries and phase gates; this file summarizes current source-level architecture and known integration state.
+> **Source snapshot:** 2026-10-26. `PROJECT_GOALS.md` defines intended boundaries and phase gates; this file summarizes current source-level architecture and known integration state.
 
 ## GOAL
 

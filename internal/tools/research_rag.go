@@ -10,8 +10,12 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/malikimayzar/mcp-gateway/internal/circuitbreaker"
 	"github.com/malikimayzar/mcp-gateway/internal/config"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 const maxRAGResponseBytes = config.DefaultRAGMaxResponseBytes
@@ -76,6 +80,14 @@ func researchRAG(ctx context.Context, req registry.ToolRequest, service config.S
 		return errorResponse(req, fmt.Sprintf("failed to encode request: %v", err))
 	}
 
+	// Circuit breaker check
+	breaker := circuitbreaker.GetBreaker("research_rag")
+	if breaker != nil {
+		if err := breaker.Allow(); err != nil {
+			return errorResponse(req, fmt.Sprintf("circuit breaker open for research_rag: %v", err))
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, service.Timeout)
 	defer cancel()
 
@@ -87,11 +99,28 @@ func researchRAG(ctx context.Context, req registry.ToolRequest, service config.S
 	httpReq.Header.Set("Content-Type", "application/json")
 	if req.TraceID != "" {
 		httpReq.Header.Set("X-Request-ID", req.TraceID)
+		httpReq.Header.Set("X-Trace-ID", req.TraceID)
 	}
+	// Propagate OpenTelemetry trace context
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(httpReq.Header))
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
+		if breaker != nil {
+			breaker.RecordFailure()
+		}
 		return errorResponse(req, fmt.Sprintf("research_rag call failed: %v", err))
+	}
+
+	// Record success/failure based on status code
+	if resp.StatusCode >= 500 {
+		if breaker != nil {
+			breaker.RecordFailure()
+		}
+	} else {
+		if breaker != nil {
+			breaker.RecordSuccess()
+		}
 	}
 	defer resp.Body.Close()
 

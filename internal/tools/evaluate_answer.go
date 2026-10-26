@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/malikimayzar/mcp-gateway/internal/circuitbreaker"
 	"github.com/malikimayzar/mcp-gateway/internal/config"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 )
@@ -55,6 +56,14 @@ func evaluateAnswer(ctx context.Context, req registry.ToolRequest, service confi
 		return errorResponse(req, fmt.Sprintf("failed to encode evaluator request: %v", err))
 	}
 
+	// Circuit breaker check
+	breaker := circuitbreaker.GetBreaker("evaluate_answer")
+	if breaker != nil {
+		if err := breaker.Allow(); err != nil {
+			return errorResponse(req, fmt.Sprintf("circuit breaker open for evaluate_answer: %v", err))
+		}
+	}
+
 	// Beri evaluator batas waktu maksimum; deadline/cancel parent tetap berlaku.
 	evalCtx, cancel := context.WithTimeout(ctx, service.Timeout)
 	ctx = evalCtx
@@ -72,7 +81,20 @@ func evaluateAnswer(ctx context.Context, req registry.ToolRequest, service confi
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
+		if breaker != nil {
+			breaker.RecordFailure()
+		}
 		return errorResponse(req, fmt.Sprintf("evaluate_answer call failed: %v", err))
+	}
+
+	if resp.StatusCode >= 500 {
+		if breaker != nil {
+			breaker.RecordFailure()
+		}
+	} else {
+		if breaker != nil {
+			breaker.RecordSuccess()
+		}
 	}
 	defer resp.Body.Close()
 

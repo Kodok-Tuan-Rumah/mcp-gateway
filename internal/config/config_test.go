@@ -82,7 +82,17 @@ func TestLoadFromLookup_EmptyEnvironmentYieldsDefaults(t *testing.T) {
 	}
 
 	want := Default()
-	if got != want {
+	if got.ListenAddress != want.ListenAddress ||
+		got.PostgresDSN != want.PostgresDSN ||
+		got.RequestTimeout != want.RequestTimeout ||
+		got.StoreLogTimeout != want.StoreLogTimeout ||
+		got.Arxiv != want.Arxiv ||
+		got.Evaluator != want.Evaluator ||
+		got.RAG != want.RAG ||
+		got.RateLimit != want.RateLimit ||
+		len(got.Auth.APIKeys) != len(want.Auth.APIKeys) ||
+		got.Auth.HeaderName != want.Auth.HeaderName ||
+		got.Auth.HeaderPrefix != want.Auth.HeaderPrefix {
 		t.Errorf("environment kosong harus menghasilkan Default().\n got: %+v\nwant: %+v", got, want)
 	}
 }
@@ -252,7 +262,7 @@ func TestLoadFromLookup_ErrorReturnsZeroConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("harus gagal")
 	}
-	if cfg != (Config{}) {
+	if cfg.ListenAddress != "" || cfg.PostgresDSN != "" || len(cfg.Auth.APIKeys) != 0 || cfg.RateLimit.RequestsPerMinute != 0 || cfg.RateLimit.Burst != 0 {
 		t.Errorf("saat error config harus kosong, dapat %+v", cfg)
 	}
 }
@@ -358,5 +368,88 @@ func TestDefault_RequestTimeoutExceedsServiceTimeouts(t *testing.T) {
 			t.Errorf("RequestTimeout %v lebih kecil dari %s.Timeout %v — request bisa terpotong sebelum selesai",
 				cfg.RequestTimeout, name, svc)
 		}
+	}
+}
+
+// Default() RateLimit harus masuk akal: tidak terlalu ketat untuk development,
+// tetapi cukup untuk mencegah abuse saat diexpose ke publik.
+func TestDefault_RateLimitIsSane(t *testing.T) {
+	cfg := Default()
+
+	if cfg.RateLimit.RequestsPerMinute <= 0 {
+		t.Errorf("RequestsPerMinute harus positif, dapat %d", cfg.RateLimit.RequestsPerMinute)
+	}
+	if cfg.RateLimit.Burst <= 0 {
+		t.Errorf("Burst harus positif, dapat %d", cfg.RateLimit.Burst)
+	}
+	if cfg.RateLimit.Burst > cfg.RateLimit.RequestsPerMinute {
+		t.Errorf("Burst %d melebihi RPM %d — burst terlalu besar", cfg.RateLimit.Burst, cfg.RateLimit.RequestsPerMinute)
+	}
+}
+
+// Default() Auth harus disabled (tidak ada API keys) untuk development.
+func TestDefault_AuthIsDisabledByDefault(t *testing.T) {
+	cfg := Default()
+
+	if len(cfg.Auth.APIKeys) != 0 {
+		t.Errorf("Auth harus disabled by default, dapat %d keys", len(cfg.Auth.APIKeys))
+	}
+	if cfg.Auth.HeaderName != "Authorization" {
+		t.Errorf("HeaderName default harus Authorization, dapat %q", cfg.Auth.HeaderName)
+	}
+	if cfg.Auth.HeaderPrefix != "Bearer" {
+		t.Errorf("HeaderPrefix default harus Bearer, dapat %q", cfg.Auth.HeaderPrefix)
+	}
+}
+
+// LoadFromLookup harus membaca rate limit dan auth dari environment.
+func TestLoadFromLookup_ReadsRateLimitAndAuth(t *testing.T) {
+	env := map[string]string{
+		"GATEWAY_RATE_LIMIT_RPM":      "30",
+		"GATEWAY_RATE_LIMIT_BURST":   "5",
+		"GATEWAY_API_KEYS":           "key1, key2, key3",
+		"GATEWAY_AUTH_HEADER_NAME":   "X-API-Key",
+		"GATEWAY_AUTH_HEADER_PREFIX": "Token",
+	}
+
+	cfg, err := LoadFromLookup(envMap(env))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if cfg.RateLimit.RequestsPerMinute != 30 {
+		t.Errorf("RequestsPerMinute: %d", cfg.RateLimit.RequestsPerMinute)
+	}
+	if cfg.RateLimit.Burst != 5 {
+		t.Errorf("Burst: %d", cfg.RateLimit.Burst)
+	}
+	if len(cfg.Auth.APIKeys) != 3 {
+		t.Errorf("expected 3 API keys, got %d", len(cfg.Auth.APIKeys))
+	}
+	if cfg.Auth.HeaderName != "X-API-Key" {
+		t.Errorf("HeaderName: %q", cfg.Auth.HeaderName)
+	}
+	if cfg.Auth.HeaderPrefix != "Token" {
+		t.Errorf("HeaderPrefix: %q", cfg.Auth.HeaderPrefix)
+	}
+}
+
+// Rate limit dan auth dengan nilai invalid harus gagal validasi.
+func TestLoadFromLookup_RejectsInvalidRateLimitAndAuth(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"RPM nol", map[string]string{"GATEWAY_RATE_LIMIT_RPM": "0"}},
+		{"Burst negatif", map[string]string{"GATEWAY_RATE_LIMIT_BURST": "-1"}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := LoadFromLookup(envMap(tc.env))
+			if err == nil {
+				t.Fatal("harus gagal, dapat nil")
+			}
+		})
 	}
 }

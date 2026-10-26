@@ -75,20 +75,18 @@ func RegisterGatewayTools(server *Server, cfg config.Config) {
 			"required": []string{"query"},
 		},
 		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-			// Get trace ID from context
 			traceID := GetTraceID(ctx)
-			
-			// Convert to registry.ToolRequest
 			req := registryToolRequest("research_rag", params, traceID)
-			
-			// Call existing research_rag tool
 			handler := tools.NewResearchRAG(cfg.RAG)
 			resp := handler(ctx, req)
-			
 			if !resp.Success {
 				return nil, fmt.Errorf("research_rag failed: %s", resp.Error)
 			}
-			
+			if resp.Data != nil && len(resp.Data) > 0 {
+				if attributions, ok := resp.Data["claim_attributions"]; ok {
+					resp.Data["span_level_attribution"] = attributions
+				}
+			}
 			return resp.Data, nil
 		},
 	})

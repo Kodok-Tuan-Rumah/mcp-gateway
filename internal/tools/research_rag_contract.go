@@ -60,6 +60,13 @@ type ResearchRAGResponse struct {
 	ReflectionPassed       *bool    `json:"reflection_passed,omitempty"`
 	ReflectionScore        *float64 `json:"reflection_score,omitempty"`
 	UnsupportedClaimsCount *int     `json:"unsupported_claims_count,omitempty"`
+	// Calibrated confidence fields (Phase 3)
+	CalibratedConfidence *float64 `json:"calibrated_confidence,omitempty"`
+	CalibratedDecision   *string  `json:"calibrated_decision,omitempty"`
+	IsCalibrated         *bool    `json:"is_calibrated,omitempty"`
+	CalibrationMethod    *string  `json:"calibration_method,omitempty"`
+	// Span-level attribution (Phase 3)
+	ClaimAttributions []map[string]interface{} `json:"claim_attributions,omitempty"`
 }
 
 // ResearchRAGChunk is one retrieved chunk returned by rag-research.
@@ -141,6 +148,22 @@ func (r ResearchRAGResponse) ToolData() map[string]interface{} {
 	}
 	if r.UnsupportedClaimsCount != nil {
 		data["unsupported_claims_count"] = *r.UnsupportedClaimsCount
+	}
+	if r.CalibratedConfidence != nil {
+		data["calibrated_confidence"] = *r.CalibratedConfidence
+	}
+	if r.CalibratedDecision != nil {
+		data["calibrated_decision"] = *r.CalibratedDecision
+	}
+	if r.IsCalibrated != nil {
+		data["is_calibrated"] = *r.IsCalibrated
+	}
+	if r.CalibrationMethod != nil {
+		data["calibration_method"] = *r.CalibrationMethod
+	}
+	if len(r.ClaimAttributions) > 0 {
+		data["claim_attributions"] = r.ClaimAttributions
+		data["span_level_attribution"] = r.ClaimAttributions
 	}
 	return data
 }

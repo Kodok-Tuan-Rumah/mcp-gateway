@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/malikimayzar/mcp-gateway/internal/circuitbreaker"
 	"github.com/malikimayzar/mcp-gateway/internal/config"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 )
@@ -75,6 +76,14 @@ func searchArxiv(ctx context.Context, req registry.ToolRequest, service config.S
 		return errorResponse(req, fmt.Sprintf("failed to encode request: %v", err))
 	}
 
+	// Circuit breaker check
+	breaker := circuitbreaker.GetBreaker("search_arxiv")
+	if breaker != nil {
+		if err := breaker.Allow(); err != nil {
+			return errorResponse(req, fmt.Sprintf("circuit breaker open for search_arxiv: %v", err))
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, service.Timeout)
 	defer cancel()
 
@@ -90,7 +99,20 @@ func searchArxiv(ctx context.Context, req registry.ToolRequest, service config.S
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
+		if breaker != nil {
+			breaker.RecordFailure()
+		}
 		return errorResponse(req, fmt.Sprintf("search_arxiv call failed: %v", err))
+	}
+
+	if resp.StatusCode >= 500 {
+		if breaker != nil {
+			breaker.RecordFailure()
+		}
+	} else {
+		if breaker != nil {
+			breaker.RecordSuccess()
+		}
 	}
 	defer resp.Body.Close()
 

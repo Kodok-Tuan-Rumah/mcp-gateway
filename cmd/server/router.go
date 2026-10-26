@@ -14,16 +14,20 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/go-chi/chi/v5/middleware"
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/malikimayzar/mcp-gateway/internal/admin"
 	"github.com/malikimayzar/mcp-gateway/internal/api"
 	"github.com/malikimayzar/mcp-gateway/internal/config"
 	"github.com/malikimayzar/mcp-gateway/internal/mcp"
+	"github.com/malikimayzar/mcp-gateway/internal/circuitbreaker"
+	"github.com/malikimayzar/mcp-gateway/internal/middleware"
 	"github.com/malikimayzar/mcp-gateway/internal/planner"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
+	"github.com/malikimayzar/mcp-gateway/internal/tracing"
 )
 
 var (
@@ -53,7 +57,7 @@ func init() {
 func promMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
+		ww := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
 		next.ServeHTTP(ww, r)
 		duration := time.Since(start).Seconds()
 
@@ -89,13 +93,46 @@ func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpSer
 
 	// RequestID harus paling awal: middleware dijalankan berurutan, jadi kalau
 	// placed setelah Logger, access log tidak punya request ID.
-	r.Use(middleware.RequestID)
-	r.Use(middleware.Recoverer)
-	r.Use(middleware.Logger)
+	r.Use(chimiddleware.RequestID)
+	r.Use(chimiddleware.Recoverer)
+	r.Use(chimiddleware.Logger)
 	r.Use(promMiddleware)
+
+	// Tracing middleware (disabled if OTEL_ENABLED != true)
+	tracingCfg := tracing.LoadConfig()
+	if tracingCfg.Enabled {
+		r.Use(tracing.HTTPMiddleware)
+	}
+
+	// Auth middleware (API key) - uses global key store for runtime rotation
+	keyStore := middleware.NewAPIKeyStore(cfg.Auth.APIKeys)
+	if cfg.Auth.KeyTiers != nil {
+		keyStore = middleware.NewAPIKeyStoreWithTiers(cfg.Auth.APIKeys, cfg.Auth.KeyTiers)
+	}
+	admin.SetGlobalKeyStore(keyStore)
+	if len(cfg.Auth.APIKeys) > 0 {
+		r.Use(middleware.AuthWithStore(keyStore, cfg.Auth.HeaderName, cfg.Auth.HeaderPrefix))
+	} else {
+		// Even if no keys configured, use the store (disabled mode)
+		r.Use(middleware.AuthWithStore(keyStore, cfg.Auth.HeaderName, cfg.Auth.HeaderPrefix))
+	}
+
+	// Rate limiting middleware
+	// Rate limiting middleware (per-key tier)
+	defaultTier := middleware.TierFree
+	if cfg.RateLimit.RequestsPerMinute > 0 {
+		defaultTier = middleware.TierConfig{
+			Name:             "default",
+			RequestsPerMinute: cfg.RateLimit.RequestsPerMinute,
+			Burst:            cfg.RateLimit.Burst,
+		}
+	}
+	r.Use(middleware.PerKeyRateLimit(keyStore, defaultTier))
 
 	r.Get("/health", handleHealth(reg))
 	r.Get("/ready", handleReady(cfg))
+	r.Post("/admin/rotate-key", admin.RotateKeyHandler(admin.GlobalKeyStore(), cfg.Auth.AdminKey))
+	r.Get("/admin/key-status", admin.KeyStatusHandler(admin.GlobalKeyStore()))
 	r.Handle("/metrics", promhttp.Handler())
 	r.Post("/tool", handleTool(reg, cfg))
 	r.Post("/plan", handlePlan(reg, cfg))
@@ -194,6 +231,11 @@ func handleReady(cfg config.Config) http.HandlerFunc {
 			bodyStatus = "degraded"
 		}
 
+		cbStates := map[string]string{}
+		if cbm := circuitbreaker.GlobalManager(); cbm != nil {
+			cbStates = cbm.States()
+		}
+
 		writeJSON(w, status, map[string]interface{}{
 			"status":   bodyStatus,
 			"check":    "readiness",
@@ -204,6 +246,7 @@ func handleReady(cfg config.Config) http.HandlerFunc {
 				"arxiv":        arxivReady,
 				"research_rag": ragReady,
 			},
+			"circuit_breakers": cbStates,
 		})
 	}
 }
@@ -236,7 +279,7 @@ func handleTool(reg *registry.Registry, cfg config.Config) http.HandlerFunc {
 			return
 		}
 		if toolReq.TraceID == "" {
-			toolReq.TraceID = middleware.GetReqID(req.Context())
+			toolReq.TraceID = chimiddleware.GetReqID(req.Context())
 		}
 
 		ctx, cancel := context.WithTimeout(req.Context(), cfg.RequestTimeout)
@@ -394,7 +437,7 @@ func logEval(req *http.Request, resp api.GatewayResponse, elapsed, timeout time.
 
 // requestID mengambil ID request dari middleware chi.
 func requestID(req *http.Request) string {
-	return middleware.GetReqID(req.Context())
+	return chimiddleware.GetReqID(req.Context())
 }
 
 // decodeJSONBody membaca body dengan batas ukuran, lalu menormalkan error decode.

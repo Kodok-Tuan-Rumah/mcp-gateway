@@ -1,0 +1,542 @@
+openapi: 3.0.3
+info:
+  title: MCP Gateway API
+  description: |
+    HTTP orchestration gateway for the AI research workspace.
+    Routes research questions to ArXiv or RAG backends and returns answers with evidence, provenance, and honest evaluation status.
+  version: 1.0.0
+  contact:
+    name: AI Infra Workspace
+    url: https://github.com/malikimayzar/ai-infra-workspace
+
+servers:
+  - url: http://localhost:8090
+    description: Local development
+  - url: http://mcp-gateway:8090
+    description: Docker (Mode A)
+
+tags:
+  - name: health
+    description: Health and readiness probes
+  - name: query
+    description: Research query endpoints
+  - name: mcp
+    description: Model Context Protocol endpoints
+  - name: admin
+    description: Administrative endpoints
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Liveness probe
+      description: Returns 200 if the process is alive. Does not check downstream services.
+      responses:
+        "200":
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /ready:
+    get:
+      tags: [health]
+      summary: Readiness probe
+      description: Probes ArXiv, RAG, and evaluator. Returns 200 if at least one answer backend is reachable.
+      responses:
+        "200":
+          description: At least one answer backend is ready
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReadyResponse'
+        "503":
+          description: No answer backend available
+
+  /metrics:
+    get:
+      tags: [health]
+      summary: Prometheus metrics
+      description: Exposes Prometheus metrics for scraping.
+      responses:
+        "200":
+          description: Prometheus metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /ask:
+    post:
+      tags: [query]
+      summary: Ask a research question
+      description: |
+        Executes a deterministic plan: selects one answer backend, generates an answer with evidence,
+        and optionally evaluates. `/ask` and `/plan` share the same flow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        "200":
+          description: Answer or abstention
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayResponse'
+        "400":
+          description: Invalid request or unknown backend
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "502":
+          description: Backend failure (provider error, sanity check, empty output)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayResponse'
+
+  /plan:
+    post:
+      tags: [query]
+      summary: Plan and execute a research question (alias for /ask)
+      description: Compatibility alias for /ask. Same deterministic flow and response contract.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+      responses:
+        "200":
+          description: Answer or abstention
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayResponse'
+        "400":
+          description: Invalid request or unknown backend
+        "502":
+          description: Backend failure
+
+  /tool:
+    post:
+      tags: [query]
+      summary: Direct tool passthrough (registry)
+      description: |
+        Direct passthrough to the tool registry. Not part of the answer contract.
+        Use /ask or /plan for research queries.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                tool_name:
+                  type: string
+                trace_id:
+                  type: string
+                params:
+                  type: object
+      responses:
+        "200":
+          description: Tool result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolResponse'
+
+  /mcp:
+    post:
+      tags: [mcp]
+      summary: MCP JSON-RPC 2.0 endpoint
+      description: |
+        Model Context Protocol endpoint. Supports HTTP, SSE (Accept: text/event-stream),
+        and stdio (via --transport=stdio flag).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JsonRpcRequest'
+      parameters:
+        - name: MCP-Protocol-Version
+          in: header
+          required: true
+          schema:
+            type: string
+            example: "2026-07-28"
+        - name: Mcp-Method
+          in: header
+          required: true
+          schema:
+            type: string
+            example: "tools/call"
+        - name: Mcp-Name
+          in: header
+          required: false
+          schema:
+            type: string
+            example: "verify_factual_claim"
+        - name: Authorization
+          in: header
+          required: false
+          schema:
+            type: string
+            example: "Bearer sk-live-abc123"
+        - name: Accept
+          in: header
+          required: false
+          schema:
+            type: string
+            example: "text/event-stream"
+      responses:
+        "200":
+          description: JSON-RPC response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JsonRpcResponse'
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE-formatted response
+
+  /admin/rotate-key:
+    post:
+      tags: [admin]
+      summary: Rotate API keys at runtime
+      description: Replace all valid API keys without restarting the service.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeyRotationRequest'
+      responses:
+        "200":
+          description: Keys rotated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyRotationResponse'
+        "400":
+          description: Invalid request (empty keys or bad JSON)
+        "401":
+          description: Invalid admin key
+        "405":
+          description: Method not allowed
+
+  /admin/key-status:
+    get:
+      tags: [admin]
+      summary: Get current API key status
+      description: Returns key count and masked keys.
+      responses:
+        "200":
+          description: Key status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  key_count:
+                    type: integer
+                  keys:
+                    type: array
+                    items:
+                      type: string
+
+components:
+  schemas:
+    QueryRequest:
+      type: object
+      required: [query]
+      properties:
+        backend:
+          type: string
+          enum: [arxiv, research_rag]
+          default: arxiv
+          description: Answer backend to use
+        query:
+          type: string
+          minLength: 3
+          maxLength: 1000
+          description: Research question
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 5
+          description: Number of evidence chunks to retrieve
+
+    GatewayResponse:
+      type: object
+      required: [request_id, decision, failure_type, evaluation_status, query, backend]
+      properties:
+        request_id:
+          type: string
+          description: Unique request identifier
+        answer:
+          type: string
+          description: Generated answer (empty if not answer)
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/Evidence'
+          description: Structured evidence from backend
+        backend:
+          type: string
+          enum: [arxiv, research_rag]
+        model:
+          type: string
+          description: Model used for generation
+        latency_ms:
+          $ref: '#/components/schemas/LatencyMs'
+        decision:
+          type: string
+          enum: [answer, abstain, error]
+        failure_type:
+          type: string
+          enum: [none, insufficient_context, unsupported_claims, provider_error, sanity_check, empty_output, invalid_request, backend_not_available]
+        evaluation_status:
+          type: string
+          enum: [completed, unavailable, skipped]
+        evaluation:
+          $ref: '#/components/schemas/Evaluation'
+        query:
+          type: string
+        orchestrator:
+          type: string
+          example: rule-based
+        reflection_passed:
+          type: boolean
+        reflection_score:
+          type: number
+          format: float
+        unsupported_claims_count:
+          type: integer
+        provider_error_kind:
+          type: string
+          enum: [rate_limit, connection, auth, invalid_json, not_configured, provider]
+        calibrated_confidence:
+          type: number
+          format: float
+        calibrated_decision:
+          type: string
+          enum: [REJECT, PARTIAL_TRUST, GENERATE]
+        is_calibrated:
+          type: boolean
+        calibration_method:
+          type: string
+          enum: [isotonic, platt, heuristic_uncalibrated]
+        claim_attributions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClaimAttribution'
+        span_level_attribution:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClaimAttribution'
+        trace_id:
+          type: string
+        span_id:
+          type: string
+
+    Evidence:
+      type: object
+      properties:
+        text:
+          type: string
+        source_id:
+          type: string
+        chunk_id:
+          type: string
+        score:
+          type: number
+          format: float
+
+    LatencyMs:
+      type: object
+      properties:
+        retrieval:
+          type: integer
+        generation:
+          type: integer
+        total:
+          type: integer
+
+    Evaluation:
+      type: object
+      properties:
+        score:
+          type: number
+          format: float
+        failure_mode:
+          type: string
+        supported_claims:
+          type: integer
+        total_claims:
+          type: integer
+        version:
+          type: string
+
+    ClaimAttribution:
+      type: object
+      properties:
+        claim_id:
+          type: string
+          example: "claim_000"
+        claim_text:
+          type: string
+        chunk_id:
+          type: string
+        doc_id:
+          type: string
+        score:
+          type: number
+          format: float
+        evidence_text:
+          type: string
+        unverified:
+          type: boolean
+
+    ErrorResponse:
+      type: object
+      properties:
+        request_id:
+          type: string
+        failure_type:
+          type: string
+        message:
+          type: string
+        field:
+          type: string
+
+    ToolResponse:
+      type: object
+      properties:
+        tool_name:
+          type: string
+        trace_id:
+          type: string
+        success:
+          type: boolean
+        data:
+          type: object
+        error:
+          type: string
+
+    JsonRpcRequest:
+      type: object
+      required: [jsonrpc, method]
+      properties:
+        jsonrpc:
+          type: string
+          enum: ["2.0"]
+        id:
+          oneOf:
+            - type: string
+            - type: integer
+        method:
+          type: string
+          enum: [server/discover, tools/list, tools/call]
+        params:
+          type: object
+
+    JsonRpcResponse:
+      type: object
+      properties:
+        jsonrpc:
+          type: string
+          enum: ["2.0"]
+        id:
+          oneOf:
+            - type: string
+            - type: integer
+        result:
+          type: object
+        error:
+          $ref: '#/components/schemas/JsonRpcError'
+
+    JsonRpcError:
+      type: object
+      properties:
+        code:
+          type: integer
+        message:
+          type: string
+        data:
+          type: string
+
+    ReadyResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ready, degraded, not_ready]
+        check:
+          type: string
+          example: readiness
+        services:
+          type: object
+          additionalProperties:
+            type: string
+        capabilities:
+          type: object
+          properties:
+            answers:
+              type: boolean
+            evaluation:
+              type: boolean
+            arxiv:
+              type: boolean
+            research_rag:
+              type: boolean
+        circuit_breakers:
+          type: object
+          additionalProperties:
+            type: string
+
+    KeyRotationRequest:
+      type: object
+      required: [new_keys]
+      properties:
+        new_keys:
+          type: array
+          items:
+            type: string
+          description: New API keys to replace existing ones
+        admin_key:
+          type: string
+          description: Admin key for authorization
+
+    KeyRotationResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+        count:
+          type: integer
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: "Bearer <api-key> or X-API-Key: <api-key>"
+
+security:
+  - ApiKeyAuth: []

@@ -1,10 +1,10 @@
 # MCP Gateway — Project Goals & Integration Spec
 
 > **Repo:** `mcp-gateway`  
-> **Status (source snapshot 2026-10-24):** Both answer backends (`arxiv` and `research_rag`) are wired and evidence is normalized per backend. `/ask` and `/plan` share one deterministic flow; `/ready` reports backend capabilities independently and treats evaluator availability as optional for answering. Runtime build, health, smoke, monitoring, cache, seed, and persistence gates were verified on 2026-10-24 (`docs/acceptance/phase-2-verification.md` at workspace root). Remaining open gates are downstream trace propagation, `/tool` security, and legacy retrieval boundaries.
-> **Last Updated:** 2026-10-24
+> **Status (source snapshot 2026-10-26):** Both answer backends (`arxiv` and `research_rag`) are wired and evidence is normalized per backend. `/ask` and `/plan` share one deterministic flow; `/ready` reports backend capabilities independently and treats evaluator availability as optional for answering. Runtime build, health, smoke, monitoring, cache, seed, and persistence gates were verified on 2026-10-26 (`docs/acceptance/phase-2-verification.md` at workspace root). Remaining open gates are downstream trace propagation, `/tool` security, and legacy retrieval boundaries.
+> **Last Updated:** 2026-10-26
 
-> **Evidence note:** Source-level integration is implemented and has Go contract coverage; runtime build, health, smoke, monitoring, cache, seed, and persistence evidence is recorded at `docs/acceptance/phase-2-verification.md` (2026-10-24). `research_rag` uses the supported `/generate` endpoint. The old `retrieve_chunks` adapter was removed because its `/retrieve` endpoint does not exist in `rag-research`.
+> **Evidence note:** Source-level integration is implemented and has Go contract coverage; runtime build, health, smoke, monitoring, cache, seed, and persistence evidence is recorded at `docs/acceptance/phase-2-verification.md` (2026-10-26). `research_rag` uses the supported `/generate` endpoint. The old `retrieve_chunks` adapter was removed because its `/retrieve` endpoint does not exist in `rag-research`.
 
 ---
 
