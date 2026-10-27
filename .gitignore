@@ -1,3 +1,6 @@
 .env
 nohup.out
 mcp-gateway
+
+# Built binaries
+mcp-stdio-adapter
