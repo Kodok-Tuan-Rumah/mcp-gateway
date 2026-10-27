@@ -1,11 +1,3 @@
-// Package logging provides structured JSON logging utilities for Go services
-//
-// Usage:
-//   logger := logging.NewLogger("mcp-gateway", logging.INFO)
-//   logger.Info("Processing request", logging.Fields{
-//       "request_id": "123",
-//       "backend": "research_rag",
-//   })
 package logging
 
 import (
@@ -13,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"time"
 )
 
@@ -93,6 +86,23 @@ func (l *Logger) SetOutput(output io.Writer) {
 	l.output = output
 }
 
+// maskAPIKey masks sensitive API keys in strings for logging
+func maskAPIKey(s string) string {
+	if s == "" {
+		return ""
+	}
+	// Mask Groq API keys (gsk_...)
+	re := regexp.MustCompile(`gsk_[a-zA-Z0-9]{20,}`)
+	s = re.ReplaceAllString(s, "gsk_***")
+	// Mask OpenAI keys (sk-...)
+	re = regexp.MustCompile(`sk-[a-zA-Z0-9]{20,}`)
+	s = re.ReplaceAllString(s, "sk-***")
+	// Mask api_key=...
+	re = regexp.MustCompile(`api_key=[^&\s]+`)
+	s = re.ReplaceAllString(s, "api_key=***")
+	return s
+}
+
 // log is the internal logging method
 func (l *Logger) log(level LogLevel, message string, fields Fields) {
 	if level < l.level {
@@ -120,7 +130,7 @@ func (l *Logger) log(level LogLevel, message string, fields Fields) {
 		delete(fields, "backend")
 	}
 	if err, ok := fields["error"].(string); ok {
-		entry.Error = err
+		entry.Error = maskAPIKey(err)
 		delete(fields, "error")
 	}
 
