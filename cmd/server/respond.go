@@ -8,13 +8,8 @@ import (
 	"github.com/malikimayzar/mcp-gateway/internal/planner"
 )
 
-// evalSkippedPrefix menandai langkah evaluasi yang dilewati karena tidak ada
-// jawaban atau konteks untuk dinilai.
 const evalSkippedPrefix = "skipped:"
 
-// toResponse memetakan hasil eksekusi ke kontrak publik.
-//
-// Prinsipnya: jawaban dan evidence dipetakan dari hasil backend yang sama.
 func toResponse(req api.AskRequest, requestID, orchestratorName string, result planner.ExecutionResult) api.GatewayResponse {
 	resp := api.GatewayResponse{
 		RequestID: requestID,
@@ -35,22 +30,20 @@ func toResponse(req api.AskRequest, requestID, orchestratorName string, result p
 	applyDecision(&resp, result)
 	applyReflectionMetadata(&resp, result)
 	applyEvaluation(&resp, result)
+	applyCalibrationMetadata(&resp, result)
+	applySpanAttribution(&resp, result)
 	return resp
 }
 
-// applyDecision menentukan decision dan failure_type berdasarkan apa yang
-// benar-benar terjadi selama eksekusi.
 func applyDecision(resp *api.GatewayResponse, result planner.ExecutionResult) {
 	answerStep := findAnswerStep(result.Steps, resp.Backend)
 
 	switch {
 	case answerStep == nil:
-		// Langkah menjawab tidak ada sama sekali — tidak terjadi apa-apa.
 		resp.Decision = api.DecisionError
 		resp.FailureType = api.FailureBackendError
 
 	case !answerStep.Success:
-		// Backend gagal: tidak dijangkau, timeout, atau balas error.
 		resp.Answer = ""
 		resp.Decision = api.DecisionError
 		resp.FailureType = classifyBackendError(answerStep.Error)
@@ -58,30 +51,21 @@ func applyDecision(resp *api.GatewayResponse, result planner.ExecutionResult) {
 	case result.FailureType == api.FailureProviderError ||
 		result.FailureType == api.FailureSanityCheck ||
 		result.FailureType == api.FailureEmptyOutput:
-		// Kegagalan pipeline backend BUKAN abstention: jawaban sentinel yang
-		// menyertainya tidak dipercaya sebagai jawaban. Publik: decision=error
-		// (HTTP 502) dengan failure_type dan kind dari backend — mapping ini
-		// perubahan kontrak sadar, lihat docs/api-contract.md.
 		resp.Answer = ""
 		resp.Decision = api.DecisionError
 		resp.FailureType = result.FailureType
 		resp.ProviderErrorKind = result.ProviderErrorKind
 
 	case strings.TrimSpace(result.Answer) == "":
-		// Response tanpa jawaban dianggap abstain; backend saat ini juga
-		// memakai sentinel eksplisit untuk keadaan yang sama.
 		resp.Answer = ""
 		resp.Decision = api.DecisionAbstain
 		resp.FailureType = api.FailureInsufficientContext
 
 	case strings.TrimSpace(result.Answer) == api.ArxivAbstainText:
-		// Abstensi backend dipertahankan apa adanya.
 		resp.Decision = api.DecisionAbstain
 		resp.FailureType = api.FailureInsufficientContext
 
 	case result.Abstained:
-		// Abstensi backend lain (mis. RAG dengan decision == "REJECT")
-		// dipertahankan jawabannya apa adanya.
 		resp.Decision = api.DecisionAbstain
 		resp.FailureType = answerFailureType(answerStep)
 		if resp.FailureType == api.FailureNone {
@@ -123,10 +107,63 @@ func applyReflectionMetadata(resp *api.GatewayResponse, result planner.Execution
 	}
 }
 
-// findAnswerStep menemukan langkah yang menghasilkan jawaban untuk backend
-// tertentu. Setiap backend punya tool jawabannya sendiri (search_arxiv untuk
-// arxiv, research_rag untuk research_rag), jadi kita harus mencari tool yang
-// benar bukan selalu search_arxiv.
+func applyCalibrationMetadata(resp *api.GatewayResponse, result planner.ExecutionResult) {
+	step := findAnswerStep(result.Steps, resp.Backend)
+	if step == nil || step.Data == nil {
+		return
+	}
+	if v, ok := step.Data["calibrated_confidence"].(float64); ok {
+		cc := v
+		resp.CalibratedConfidence = &cc
+	}
+	if v, ok := step.Data["calibrated_decision"].(string); ok && v != "" {
+		resp.CalibratedDecision = v
+	}
+}
+
+func applySpanAttribution(resp *api.GatewayResponse, result planner.ExecutionResult) {
+	step := findAnswerStep(result.Steps, resp.Backend)
+	if step == nil || step.Data == nil {
+		return
+	}
+	raw, ok := step.Data["span_level_attribution"]
+	if !ok {
+		raw = step.Data["claim_attributions"]
+	}
+	items, ok := raw.([]interface{})
+	if !ok {
+		return
+	}
+	out := make([]api.SpanAttribution, 0, len(items))
+	for _, it := range items {
+		m, ok := it.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		sa := api.SpanAttribution{}
+		if v, ok := m["claim_span"].(string); ok {
+			sa.ClaimSpan = v
+		}
+		if v, ok := m["chunk_id"].(string); ok {
+			sa.ChunkID = v
+		}
+		if v, ok := m["doc_id"].(string); ok {
+			sa.DocID = v
+		}
+		if v, ok := m["text"].(string); ok {
+			sa.Text = v
+		}
+		if v, ok := m["score"].(float64); ok {
+			score := v
+			sa.Score = &score
+		}
+		out = append(out, sa)
+	}
+	if len(out) > 0 {
+		resp.SpanLevelAttribution = out
+	}
+}
+
 func findAnswerStep(steps []planner.StepResult, backend string) *planner.StepResult {
 	answerTool := answerToolForBackend(backend)
 	for i := range steps {
@@ -137,8 +174,6 @@ func findAnswerStep(steps []planner.StepResult, backend string) *planner.StepRes
 	return nil
 }
 
-// answerToolForBackend mengembalikan nama tool yang menghasilkan jawaban untuk
-// backend tertentu.
 func answerToolForBackend(backend string) string {
 	switch backend {
 	case api.BackendArxiv:
@@ -150,9 +185,6 @@ func answerToolForBackend(backend string) string {
 	}
 }
 
-// applyEvaluation mengisi evaluation_status. Status ini selalu ada dan tidak
-// pernah disimpulkan dari score: score 0 yang sah dan "tidak dinilai" adalah
-// dua keadaan yang berbeda.
 func applyEvaluation(resp *api.GatewayResponse, result planner.ExecutionResult) {
 	step, found := findStep(result.Steps, toolEvaluateAnswer)
 
@@ -203,11 +235,6 @@ func applyEvaluation(resp *api.GatewayResponse, result planner.ExecutionResult) 
 		resp.Evaluation.TotalClaims = n
 	}
 }
-
-// claimCount reads a non-negative integer claim count from evaluator data.
-//
-// The HTTP adapter stores counts as int (EvaluateAnswerResponse.ToolData),
-// while tests and the raw /tool path can produce float64 after JSON decoding.
 func claimCount(data map[string]interface{}, key string) (int, bool) {
 	switch v := data[key].(type) {
 	case int:
@@ -222,8 +249,6 @@ func claimCount(data map[string]interface{}, key string) (int, bool) {
 	return 0, false
 }
 
-// evalScore membaca skor dari data langkah evaluasi. Mengembalikan ok=false
-// bila tidak ada atau tipenya salah — supaya tidak pernah diam-diam jadi 0.
 func evalScore(data map[string]interface{}) (float64, bool) {
 	if data == nil {
 		return 0, false
@@ -235,8 +260,6 @@ func evalScore(data map[string]interface{}) (float64, bool) {
 	return v, true
 }
 
-// classifyBackendError memetakan pesan error langkah ke failure_type yang
-// lebih berguna daripada satu kategori "error".
 func classifyBackendError(msg string) string {
 	m := strings.ToLower(msg)
 	switch {
@@ -253,7 +276,6 @@ func classifyBackendError(msg string) string {
 	}
 }
 
-// findStep mencari hasil satu tool di dalam daftar langkah.
 func findStep(steps []planner.StepResult, tool string) (planner.StepResult, bool) {
 	for _, s := range steps {
 		if s.ToolName == tool {

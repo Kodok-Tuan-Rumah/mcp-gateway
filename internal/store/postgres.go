@@ -20,6 +20,14 @@ var migrationsFS embed.FS
 // DefaultPostgresDSN adalah nilai fallback untuk pengembangan lokal.
 const DefaultPostgresDSN = "host=localhost port=5432 user=arxiv password=arxiv_secret dbname=arxiv_db sslmode=disable"
 
+// Connection pool defaults.
+const (
+	DefaultMaxOpenConns    = 25
+	DefaultMaxIdleConns    = 5
+	DefaultConnMaxLifetime = 5 * time.Minute
+	DefaultConnMaxIdleTime = 1 * time.Minute
+)
+
 // LogTable adalah tabel milik gateway.
 //
 // Tabel `query_logs` milik arxiv-research-assistant dan tidak dipakai di sini:
@@ -31,12 +39,20 @@ const LogTable = "gateway_query_logs"
 
 var db *sql.DB
 
-// Init membuka koneksi PostgreSQL.
+// Init membuka koneksi PostgreSQL dengan connection pooling.
 //
 // dsn diberikan pemanggil (diambil dari config saat startup) supaya store tidak
 // membaca environment variable sendiri dan supaya nilai yang dipakai bisa
 // diuji. Kalau dsn kosong, konfigurasi default lokal dipakai.
+//
+// Pool configuration uses sensible defaults (MaxOpenConns=25, MaxIdleConns=5,
+// ConnMaxLifetime=5m, ConnMaxIdleTime=1m). Use InitWithPool for custom settings.
 func Init(dsn string) {
+	InitWithPool(dsn, DefaultMaxOpenConns, DefaultMaxIdleConns, DefaultConnMaxLifetime, DefaultConnMaxIdleTime)
+}
+
+// InitWithPool membuka koneksi PostgreSQL dengan konfigurasi pool kustom.
+func InitWithPool(dsn string, maxOpen, maxIdle int64, maxLifetime, maxIdleTime time.Duration) {
 	if dsn == "" {
 		dsn = DefaultPostgresDSN
 	}
@@ -47,6 +63,15 @@ func Init(dsn string) {
 		log.Printf("[store] failed to open DB: %v", err)
 		return
 	}
+
+	// Configure connection pool
+	db.SetMaxOpenConns(int(maxOpen))
+	db.SetMaxIdleConns(int(maxIdle))
+	db.SetConnMaxLifetime(maxLifetime)
+	db.SetConnMaxIdleTime(maxIdleTime)
+
+	log.Printf("[store] pool configured: maxOpen=%d, maxIdle=%d, maxLifetime=%v, maxIdleTime=%v",
+		maxOpen, maxIdle, maxLifetime, maxIdleTime)
 
 	// sql.Open does not connect. Ping is the first real network call, so it must
 	// be bounded: otherwise an unreachable PostgreSQL host can delay gateway
@@ -175,6 +200,56 @@ func nullIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+// PoolStats returns connection pool statistics.
+func PoolStats() sql.DBStats {
+	if db == nil {
+		return sql.DBStats{}
+	}
+	return db.Stats()
+}
+
+// AuditLog adalah satu catatan audit trail per request.
+type AuditLog struct {
+	RequestID            string
+	Backend              string
+	Claim                string
+	Decision             string
+	CalibratedConfidence *float64
+	CalibratedDecision   string
+	EvidenceJSON         string
+	SpanJSON             string
+}
+
+// LogAudit menyimpan audit trail. Kegagalan tidak boleh menggagalkan request.
+func LogAudit(ctx context.Context, a AuditLog) {
+	if db == nil {
+		return
+	}
+	_, err := db.ExecContext(ctx, `
+		INSERT INTO audit_trail
+			(request_id, backend, claim, decision, calibrated_confidence,
+			 calibrated_decision, evidence, span_level_attribution)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+		nullIfEmpty(a.RequestID),
+		nullIfEmpty(a.Backend),
+		a.Claim,
+		nullIfEmpty(a.Decision),
+		a.CalibratedConfidence,
+		nullIfEmpty(a.CalibratedDecision),
+		nullIfEmpty(a.EvidenceJSON),
+		nullIfEmpty(a.SpanJSON),
+	)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("[store] audit insert skipped (%s): request=%s", err, a.RequestID)
+			return
+		}
+		log.Printf("[store] audit insert failed: %v", err)
+		return
+	}
+	log.Printf("[store] audit logged | request=%s backend=%s decision=%s", a.RequestID, a.Backend, a.Decision)
 }
 
 func Close() {

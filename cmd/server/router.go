@@ -20,9 +20,9 @@ import (
 
 	"github.com/malikimayzar/mcp-gateway/internal/admin"
 	"github.com/malikimayzar/mcp-gateway/internal/api"
+	"github.com/malikimayzar/mcp-gateway/internal/circuitbreaker"
 	"github.com/malikimayzar/mcp-gateway/internal/config"
 	"github.com/malikimayzar/mcp-gateway/internal/mcp"
-	"github.com/malikimayzar/mcp-gateway/internal/circuitbreaker"
 	"github.com/malikimayzar/mcp-gateway/internal/middleware"
 	"github.com/malikimayzar/mcp-gateway/internal/planner"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
@@ -122,9 +122,9 @@ func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpSer
 	defaultTier := middleware.TierFree
 	if cfg.RateLimit.RequestsPerMinute > 0 {
 		defaultTier = middleware.TierConfig{
-			Name:             "default",
+			Name:              "default",
 			RequestsPerMinute: cfg.RateLimit.RequestsPerMinute,
-			Burst:            cfg.RateLimit.Burst,
+			Burst:             cfg.RateLimit.Burst,
 		}
 	}
 	r.Use(middleware.PerKeyRateLimit(keyStore, defaultTier))
@@ -137,6 +137,7 @@ func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpSer
 	r.Post("/tool", handleTool(reg, cfg))
 	r.Post("/plan", handlePlan(reg, cfg))
 	r.Post("/ask", handleAsk(reg, cfg))
+	r.Post("/audit", handleAsk(reg, cfg))
 
 	// Add MCP endpoint if server is provided
 	if mcpServer != nil {
@@ -346,6 +347,23 @@ func handleBackendRequest(reg *registry.Registry, cfg config.Config) http.Handle
 		resp := toResponse(*askReq, requestID(req), orchestratorRuleBased, result)
 		respond(w, req, resp)
 		logEval(req, resp, elapsed, cfg.StoreLogTimeout)
+
+		evidenceJSON, _ := json.Marshal(resp.Evidence)
+		spanJSON, _ := json.Marshal(resp.SpanLevelAttribution)
+		auditCtx, auditCancel := context.WithTimeout(context.Background(), cfg.StoreLogTimeout)
+		go func() {
+			defer auditCancel()
+			store.LogAudit(auditCtx, store.AuditLog{
+				RequestID:            resp.RequestID,
+				Backend:              resp.Backend,
+				Claim:                resp.Query,
+				Decision:             resp.Decision,
+				CalibratedConfidence: resp.CalibratedConfidence,
+				CalibratedDecision:   resp.CalibratedDecision,
+				EvidenceJSON:         string(evidenceJSON),
+				SpanJSON:             string(spanJSON),
+			})
+		}()
 	}
 }
 
