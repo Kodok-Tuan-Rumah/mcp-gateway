@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// Faithfulness harus *float64 supaya "tidak dinilai" tersimpan sebagai NULL.
-// Dengan float64, tidak dinilai menjadi 0 dan tabel penuh angka nol yang
-// terbaca sebagai hasil buruk.
 func TestEvalLog_FaithfulnessIsNullable(t *testing.T) {
 	var unset EvalLog
 	if unset.Faithfulness != nil {
@@ -26,7 +23,6 @@ func TestEvalLog_FaithfulnessIsNullable(t *testing.T) {
 }
 
 // nullIfEmpty mengubah string kosong menjadi NULL supaya kolom tidak menyimpan
-// string kosong yang terbaca sebagai nilai.
 func TestNullIfEmpty(t *testing.T) {
 	if got := nullIfEmpty(""); got != nil {
 		t.Errorf("string kosong harus jadi nil, dapat %#v", got)
@@ -36,9 +32,6 @@ func TestNullIfEmpty(t *testing.T) {
 	}
 }
 
-// Nama tabel harus milik gateway. Tabel query_logs dimiliki
-// arxiv-research-assistant dengan definisi kolom yang berbeda, dan menulis
-// keduanya dengan semantik berbeda membuat hasil analitis tidak dipercaya.
 func TestLogTable_IsGatewayOwned(t *testing.T) {
 	if LogTable != "gateway_query_logs" {
 		t.Errorf("LogTable = %q, harus gateway_query_logs", LogTable)
@@ -49,7 +42,6 @@ func TestLogTable_IsGatewayOwned(t *testing.T) {
 }
 
 // LogEval harus aman dipanggil tanpa koneksi: logging adalah jalur
-// observability dan tidak boleh menjatuhkan request.
 func TestLogEval_NoConnectionIsNoop(_ *testing.T) {
 	original := db
 	db = nil

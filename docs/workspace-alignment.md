@@ -3,7 +3,7 @@
 > Catatan ini merekam alignment desain pada 2026-10-15. Checklist dan rekomendasi
 > di bawah bukan status implementasi terbaru. Untuk kondisi source saat ini, lihat
 > [`../PROJECT_CONTEXT.md`](../PROJECT_CONTEXT.md) dan roadmap aktif
-> [`../IMPLEMENTATION_TODO.md`](../IMPLEMENTATION_TODO.md). Sejak snapshot ini,
+> [`../../docs/ROADMAP.md`](../../docs/ROADMAP.md) di workspace root. Sejak snapshot ini,
 > adapter `research_rag` dan `/ready` telah ditambahkan.
 
 > **Review date:** 2026-10-15  
@@ -23,7 +23,7 @@ Agree on who owns each capability and on the request/response seams before addin
 | Faithfulness and robustness evaluation | `llm-eval-framework` | Optionally submit one backend's answer and its own evidence; report evaluator availability separately |
 | Public entry point, backend selection, normalization, tracing, failure mapping | `mcp-gateway` | Route one request to one answer backend; never merge backend answers or evidence in v1 |
 
-These boundaries follow [`../WORKSPACE_DIRECTION.md`](../WORKSPACE_DIRECTION.md). The gateway supports explicit selection between `arxiv` and `research_rag`; for compatibility, omitted `backend` still defaults to `arxiv`, though clients should select explicitly.
+These boundaries follow the workspace product boundaries defined in [`../PROJECT_GOALS.md`](../PROJECT_GOALS.md). The gateway supports explicit selection between `arxiv` and `research_rag`; for compatibility, omitted `backend` still defaults to `arxiv`, though clients should select explicitly.
 
 ## Source-verified service contracts
 

@@ -187,8 +187,6 @@ func TestResearchRAG_IsAbstention(t *testing.T) {
 	if generate.IsAbstention() {
 		t.Errorf("decision GENERATE should not be abstention")
 	}
-	// framing /generate saat rag-research absten: decision tetap GENERATE,
-	// abstensi ditandai failure_type atau sentinel jawaban.
 	genAbstainFailure := ResearchRAGResponse{Decision: "GENERATE", FailureType: api.FailureInsufficientContext}
 	if !genAbstainFailure.IsAbstention() {
 		t.Errorf("GENERATE + failure_type insufficient_context should be abstention")

@@ -6,26 +6,12 @@ import (
 	"sync"
 )
 
-// ToolRequest adalah permintaan pemanggilan tool pada endpoint /tool.
-//
-// Key JSON sengaja snake_case dan harus tetap begitu: bentuk inilah yang
-// didokumentasikan di README dan dipakai scripts/benchmark.py. Go tidak bisa
-// menjembatani tool_name ke ToolName tanpa tag — case-insensitive matching
-// tidak berlaku pada underscore — jadi menghapus tag akan membuat /tool
-// menolak setiap payload yang ada di dokumentasi.
-//
-// Dikunci oleh contract_test.go.
 type ToolRequest struct {
 	ToolName string                 `json:"tool_name"`
 	TraceID  string                 `json:"trace_id"`
 	Params   map[string]interface{} `json:"params"`
 }
 
-// ToolResponse adalah hasil pemanggilan tool pada endpoint /tool.
-//
-// Bentuk ini berbeda dari GatewayResponse di internal/api/contract.go dengan
-// sengaja: /tool adalah passthrough mentah ke registry dan berada di luar
-// kontrak jawaban (docs/api-contract.md §2).
 type ToolResponse struct {
 	ToolName    string                 `json:"tool_name"`
 	TraceID     string                 `json:"trace_id"`

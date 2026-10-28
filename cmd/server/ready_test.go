@@ -9,7 +9,6 @@ import (
 )
 
 // readyRouter builds the production router with downstream URLs pointing at
-// test servers. Only the readiness handler is exercised here.
 func readyRouter(t *testing.T, arxivURL, evaluatorURL, ragURL string) *httptest.Server {
 	t.Helper()
 

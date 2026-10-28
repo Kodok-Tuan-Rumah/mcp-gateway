@@ -143,6 +143,8 @@ func applySpanAttribution(resp *api.GatewayResponse, result planner.ExecutionRes
 		sa := api.SpanAttribution{}
 		if v, ok := m["claim_span"].(string); ok {
 			sa.ClaimSpan = v
+		} else if v, ok := m["claim_text"].(string); ok {
+			sa.ClaimSpan = v
 		}
 		if v, ok := m["chunk_id"].(string); ok {
 			sa.ChunkID = v
@@ -152,10 +154,16 @@ func applySpanAttribution(resp *api.GatewayResponse, result planner.ExecutionRes
 		}
 		if v, ok := m["text"].(string); ok {
 			sa.Text = v
+		} else if v, ok := m["evidence_text"].(string); ok {
+			sa.Text = v
 		}
 		if v, ok := m["score"].(float64); ok {
 			score := v
 			sa.Score = &score
+		}
+		if v, ok := m["unverified"].(bool); ok {
+			b := v
+			sa.Unverified = &b
 		}
 		out = append(out, sa)
 	}

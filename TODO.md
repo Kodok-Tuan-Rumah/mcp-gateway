@@ -18,14 +18,14 @@
 - [x] Span-level attribution exposed via MCP
 - [x] Confidence calibration exposed via MCP
 
+- [x] OpenTelemetry distributed tracing (gateway → rag → eval)
+- [x] Circuit breaker for downstream services
+- [x] API key rotation mechanism
+- [x] Per-key rate limits (different tiers)
+- [x] OpenAPI/Swagger spec for public API
+- [x] CI/CD pipeline (GitHub Actions) for gateway
 ## Pending
 
-- [ ] OpenTelemetry distributed tracing (gateway → rag → eval)
-- [ ] Circuit breaker for downstream services
-- [ ] API key rotation mechanism
-- [ ] Per-key rate limits (different tiers)
-- [ ] OpenAPI/Swagger spec for public API
-- [ ] CI/CD pipeline (GitHub Actions) for gateway
 - [ ] Deployment guide (`docs/DEPLOYMENT.md`)
 
 ## Notes

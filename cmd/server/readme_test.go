@@ -8,14 +8,7 @@ import (
 	"testing"
 )
 
-// Test ini menjaga README tetap jujur. README pernah mengklaim ada
-// docker-compose.yml yang tidak pernah ada, dan menampilkan benchmark yang
-// terukur ke endpoint yang tidak ada — keduanya terlihat kredibel tapi salah.
-//
-// Isinya memeriksa klaim yang bisa dibuktikan terhadap repo ini, bukan
-// menyusun README. Kekhawatiran dokumentasi yang lain belum bisa diuji.
-
-// readme mengembalikan isi README.md.
+// mengembalikan README.md
 func readme(t *testing.T) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
@@ -25,21 +18,10 @@ func readme(t *testing.T) string {
 	return string(b)
 }
 
-// README tidak boleh menyebut file yang tidak ada. Klaim "docker-compose.yml —
-// full stack (10 services)" bertahan lama karena tidak ada yang memeriksanya.
-// Nama file di pohon direktori tidak memakai backtick, jadi keduanya dipindai.
 func TestReadme_ReferencesOnlyExistingPaths(t *testing.T) {
 	content := readme(t)
-
-	// (1) Rujukan inline di dalam backtick, mis. `.env.example`.
 	backticked := regexp.MustCompile("`([A-Za-z0-9_./-]+\\.(?:go|md|yml|yaml|json|sh|py))`")
-
-	// (2) Baris pohon direktori, mis. "├── docker-compose.yml — full stack".
-	// Ekstensi yang umum dipakai, tanpa tanda backtick.
 	treeLine := regexp.MustCompile(`(?m)^[│├└─\s]*([A-Za-z0-9_.-]+\.(?:go|md|yml|yaml|json|sh|py))\b`)
-
-	// Subtree tempat file sumber berada. Baris pohon sering hanya menulis
-	// basename, jadi nama harus dicari di repo root dulu, lalu di sini.
 	sourceDirs := []string{
 		"cmd/server",
 		"internal", "internal/api", "internal/config", "internal/planner",
@@ -49,7 +31,6 @@ func TestReadme_ReferencesOnlyExistingPaths(t *testing.T) {
 
 	seen := map[string]bool{}
 
-	// exists melapor apakah ref menunjuk file yang benar-benar ada.
 	exists := func(ref string) bool {
 		if _, err := os.Stat(filepath.Join("..", "..", ref)); err == nil {
 			return true
@@ -87,11 +68,9 @@ func TestReadme_ReferencesOnlyExistingPaths(t *testing.T) {
 	}
 }
 
-// Setiap env var yang didokumentasikan README harus benar-benar dibaca kode.
 // README should document only runtime settings parsed by gateway config.
 func TestReadme_DocumentsOnlyRealEnvVars(t *testing.T) {
 	content := readme(t)
-
 	known := map[string]struct{}{
 		"POSTGRES_DSN":             {},
 		"ARXIV_SERVICE_URL":        {},
@@ -108,9 +87,6 @@ func TestReadme_DocumentsOnlyRealEnvVars(t *testing.T) {
 		"RAG_MAX_RESPONSE_BYTES":   {},
 	}
 
-	// Cocokkan hanya nama env var: huruf kapital semua, di dalam backtick, dan
-	// ditulis sebagai NAME= (pola lama menuntut "=` sehingga nama yang ditulis
-	// "__NAME__=" http://..." justru terlewat).
 	envPattern := regexp.MustCompile("`([A-Z][A-Z0-9_]{3,})=")
 	for _, m := range envPattern.FindAllStringSubmatch(content, -1) {
 		name := m[1]
@@ -119,8 +95,6 @@ func TestReadme_DocumentsOnlyRealEnvVars(t *testing.T) {
 		}
 	}
 
-	// Nama env var juga boleh disebut tanpa nilai, misalnya "RAG_SERVICE_URL is
-	// not consumed". Pola ini hanya menangkap yang bersama tanda kurung.
 	mentionPattern := regexp.MustCompile("`([A-Z][A-Z0-9_]{3,})`")
 	for _, m := range mentionPattern.FindAllStringSubmatch(content, -1) {
 		name := m[1]
@@ -133,9 +107,6 @@ func TestReadme_DocumentsOnlyRealEnvVars(t *testing.T) {
 	}
 }
 
-// envVarish menyaring nama kapital yang merupakan nama konfigurasi: berakhiran
-// _URL/_DSN/_KEY/_ADDRESS/_TIMEOUT, atau memuat SERVICE/BYTES/LISTEN. Tanpa
-// penyaring ini nama file seperti PROJECT_GOALS ikut dianggap env var.
 func envVarish(name string) bool {
 	for _, suffix := range []string{"_URL", "_DSN", "_KEY", "_ADDRESS", "_TIMEOUT"} {
 		if strings.HasSuffix(name, suffix) {
@@ -147,8 +118,6 @@ func envVarish(name string) bool {
 		strings.Contains(name, "LISTEN")
 }
 
-// README harus menyebut make check dan make demo, karena itu jalur verifikasi
-// yang dipakai Anyone untuk memastikan perubahan bekerja.
 func TestReadme_PointsAtVerificationCommands(t *testing.T) {
 	content := readme(t)
 	for _, cmd := range []string{"make check", "make demo"} {
@@ -174,12 +143,8 @@ func TestReadme_DoesNotClaimReadiness(t *testing.T) {
 	}
 }
 
-// Jika README menampilkan response contoh, key-nya harus sesuai kontrak publik.
-// Bentuk lama (Query/Answer/Score PascalCase) sudah tidak berlaku.
 func TestReadme_ExampleUsesCurrentContract(t *testing.T) {
 	content := readme(t)
-
-	// Key kontrak wajib ada di contoh response.
 	if !strings.Contains(content, "request_id") {
 		t.Error("contoh response di README tidak memakai request_id")
 	}
@@ -187,7 +152,6 @@ func TestReadme_ExampleUsesCurrentContract(t *testing.T) {
 		t.Error("contoh response di README tidak memakai evaluation_status")
 	}
 
-	// Key lama tidak boleh muncul sebagai contoh field response.
 	for _, stale := range []string{`"Answer"`, `"Score"`, `"Query"`} {
 		if strings.Contains(content, stale) {
 			t.Errorf("contoh response masih memakai key lama %s", stale)

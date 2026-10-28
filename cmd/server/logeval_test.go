@@ -8,23 +8,16 @@ import (
 	"github.com/malikimayzar/mcp-gateway/internal/store"
 )
 
-// Test ini mengunci regresi T6: penulisan log evaluasi berjalan di goroutine,
-// sementara context permintaan sudah dibatalkan begitu handler selesai
-// (defer cancel). Sebelum diperbaiki, INSERT hampir selalu gagal dengan
-// "context canceled" sehingga data observability hilang tanpa jejak.
 func TestLogEvalAsync_ContextNotCancelledByParent(t *testing.T) {
 	reqCtx, cancelReq := context.WithCancel(context.Background())
 
 	observed := make(chan error, 1)
 	write := func(ctx context.Context, _ store.EvalLog) {
-		// Simulasikan latensi DB agar goroutine belum selesai saat parent dibatalkan.
 		time.Sleep(50 * time.Millisecond)
 		observed <- ctx.Err()
 	}
 
 	logEvalAsync(reqCtx, store.EvalLog{Query: "q"}, write)
-
-	// Handler selesai → parent dibatalkan. Ini harus TIDAK mematikan penulisan.
 	cancelReq()
 
 	select {
@@ -38,7 +31,6 @@ func TestLogEvalAsync_ContextNotCancelledByParent(t *testing.T) {
 }
 
 // Pastikan penulisan tetap punya batas waktu sendiri, jadi request yang
-// menggantung tidak menggantungkan goroutine selamanya.
 func TestLogEvalAsync_HasOwnDeadline(t *testing.T) {
 	reqCtx, cancelReq := context.WithCancel(context.Background())
 	defer cancelReq()
@@ -62,7 +54,6 @@ func TestLogEvalAsync_HasOwnDeadline(t *testing.T) {
 }
 
 // Data yang diteruskan harus utuh — regression guard kalau refactor
-// call site lupa mengoper EvalLog.
 func TestLogEvalAsync_PassesEvalLogIntact(t *testing.T) {
 	score := 0.86
 	in := store.EvalLog{

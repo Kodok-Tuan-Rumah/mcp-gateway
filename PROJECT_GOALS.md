@@ -110,7 +110,7 @@ These are current source-level or operational gaps, not benchmark results:
 
 Treat the remaining source-level gaps as release gates; runtime verification is separate.
 
-The actionable, phase-by-phase checklist and completion criteria are maintained in [`IMPLEMENTATION_TODO.md`](IMPLEMENTATION_TODO.md). Treat its checked items as source-level implementation status, not proof that a full deployment has been run.
+The actionable, phase-by-phase checklist and completion criteria are maintained in the main roadmap at workspace root: [`../docs/ROADMAP.md`](../docs/ROADMAP.md). Treat its checked items as source-level implementation status, not proof that a full deployment has been run.
 
 ---
 

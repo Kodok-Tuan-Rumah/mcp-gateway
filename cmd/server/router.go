@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"log"
 	"net/http"
 	"sort"
@@ -138,6 +139,17 @@ func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpSer
 	r.Post("/plan", handlePlan(reg, cfg))
 	r.Post("/ask", handleAsk(reg, cfg))
 	r.Post("/audit", handleAsk(reg, cfg))
+
+	// Static audit dossier UI
+	auditDir := "web/audit"
+	if envDir := os.Getenv("AUDIT_UI_DIR"); envDir != "" {
+		auditDir = envDir
+	}
+	fs := http.StripPrefix("/audit/", http.FileServer(http.Dir(auditDir)))
+	r.Get("/audit", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/audit/", http.StatusMovedPermanently)
+	})
+	r.Get("/audit/*", fs.ServeHTTP)
 
 	// Add MCP endpoint if server is provided
 	if mcpServer != nil {

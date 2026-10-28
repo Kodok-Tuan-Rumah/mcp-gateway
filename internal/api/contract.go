@@ -131,11 +131,12 @@ type Evidence struct {
 
 // SpanAttribution memetakan span klaim ke chunk sumber (Phase 4 audit).
 type SpanAttribution struct {
-	ClaimSpan string   `json:"claim_span,omitempty"`
-	ChunkID   string   `json:"chunk_id,omitempty"`
-	DocID     string   `json:"doc_id,omitempty"`
-	Score     *float64 `json:"score,omitempty"`
-	Text      string   `json:"text,omitempty"`
+	ClaimSpan  string   `json:"claim_span,omitempty"`
+	ChunkID    string   `json:"chunk_id,omitempty"`
+	DocID      string   `json:"doc_id,omitempty"`
+	Score      *float64 `json:"score,omitempty"`
+	Text       string   `json:"text,omitempty"`
+	Unverified *bool    `json:"unverified,omitempty"`
 }
 
 type StageLatency struct {

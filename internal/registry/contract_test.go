@@ -41,10 +41,7 @@ func assertGolden(t *testing.T, name string, got string) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Golden: bentuk JSON pada wire
-// ---------------------------------------------------------------------------
-
 func TestGolden_ToolRequestShape(t *testing.T) {
 	req := ToolRequest{
 		ToolName: "example_tool",
@@ -65,7 +62,6 @@ func TestGolden_ToolResponseSuccess(t *testing.T) {
 }
 
 func TestGolden_ToolResponseFailure(t *testing.T) {
-	// Error terisi, Data kosong → key "data" harus absen (omitempty).
 	resp := ToolResponse{
 		ToolName: "nonexistent",
 		TraceID:  "trace-2",
@@ -75,14 +71,7 @@ func TestGolden_ToolResponseFailure(t *testing.T) {
 	assertGolden(t, "tool_response_failure", marshalJSON(t, resp))
 }
 
-// ---------------------------------------------------------------------------
 // Regresi #1 — payload yang dipakai README dan scripts/benchmark.py
-// ---------------------------------------------------------------------------
-
-// Ini test yang mencegah regresi JSON tag hilang. Tanpa tag
-// `json:"tool_name"`, Go tidak akan menjembatani tool_name ke ToolName
-// (case-insensitive matching tidak berlaku pada underscore), dan setiap
-// payload bergaya snake_case akan ditolak dengan 400.
 func TestContract_SnakeCasePayloadIsAccepted(t *testing.T) {
 	raw := `{"tool_name":"example_tool","trace_id":"trace-1","params":{"query":"transformer","top_k":5}}`
 
@@ -151,7 +140,6 @@ func TestContract_ResponseIsSnakeCase(t *testing.T) {
 }
 
 // Go hanya mencocokkan nama tag, sehingga bentuk PascalCase tidak lagi diterima.
-// Test ini mendokumentasikan perilaku itu supaya tidak disalahartikan nanti.
 func TestContract_PascalCaseIsNotAccepted(t *testing.T) {
 	var req ToolRequest
 	if err := json.Unmarshal([]byte(`{"ToolName":"example_tool"}`), &req); err != nil {

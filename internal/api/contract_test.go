@@ -20,8 +20,7 @@ func marshalJSON(t *testing.T, v interface{}) string {
 	return string(b)
 }
 
-// assertGolden membandingkan JSON aktual dengan file golden di testdata/.
-// Diperbarui dengan: go test ./internal/api/ -run Golden -update
+// assertGolden membandingkan JSON aktual dengan file golden di testdata
 func assertGolden(t *testing.T, name string, got string) {
 	t.Helper()
 	path := filepath.Join("testdata", name+".json")
@@ -45,10 +44,7 @@ func assertGolden(t *testing.T, name string, got string) {
 
 var update = flag.Bool("update", false, "perbarui file golden")
 
-// ---------------------------------------------------------------------------
 // Golden: bentuk response
-// ---------------------------------------------------------------------------
-
 func TestGolden_AnsweredWithEvidence(t *testing.T) {
 	resp := GatewayResponse{
 		RequestID: "req-abc123",
@@ -88,8 +84,6 @@ func TestGolden_AbstainPreserved(t *testing.T) {
 }
 
 func TestGolden_EvaluatorUnavailable(t *testing.T) {
-	// Kasus inti: evaluator mati. Jawaban backend tetap dikembalikan,
-	// evaluation_status="unavailable", dan TIDAK ADA key "score".
 	resp := GatewayResponse{
 		RequestID: "req-abc125",
 		BackendAnswer: BackendAnswer{
@@ -113,12 +107,7 @@ func TestGolden_ErrorResponse(t *testing.T) {
 	}))
 }
 
-// ---------------------------------------------------------------------------
 // Kontrak yang harus upheld — ini yang mengunci Phase 2
-// ---------------------------------------------------------------------------
-
-// Skor 0 yang sah harus tetap muncul di JSON. 0 adalah nilai yang mungkin dan
-// tidak boleh hilang — hanya "belum dinilai" (nil) yang boleh absen.
 func TestScore_ZeroIsSerialized(t *testing.T) {
 	resp := GatewayResponse{
 		BackendAnswer:    BackendAnswer{Answer: "a", Backend: BackendArxiv, Decision: DecisionAnswer, FailureType: FailureNone},
@@ -218,7 +207,6 @@ func TestBackendAnswer_UnreportedFieldsAreAbsent(t *testing.T) {
 			Backend:     BackendArxiv,
 			Decision:    DecisionAnswer,
 			FailureType: FailureNone,
-			// Tidak ada Model, tidak ada Latency, tidak ada Evidence.
 		},
 		EvaluationStatus: EvalSkipped,
 	}
@@ -233,11 +221,7 @@ func TestBackendAnswer_UnreportedFieldsAreAbsent(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
 // Request
-// ---------------------------------------------------------------------------
-
-// Body dari client harus bisa dibaca dengan key snake_case.
 func TestAskRequest_UnmarshalsSnakeCase(t *testing.T) {
 	raw := `{"backend":"arxiv","query":"apa itu RAG?","top_k":3}`
 	var r AskRequest

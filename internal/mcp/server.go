@@ -86,8 +86,6 @@ func (s *Server) HandleRequest(ctx context.Context, req *JSONRPCRequest, traceID
 	case "tools/call":
 		return s.handleToolsCall(ctx, req, traceID)
 	case "initialize", "initialized":
-		// 2026-07-28 removed the handshake. Point legacy clients at the
-		// supported per-request versions instead of failing opaquely.
 		return marshalErrorResponse(req.ID, NewLegacyInitializeError(req.Method))
 	default:
 		return marshalErrorResponse(req.ID, NewMethodNotFoundError(req.Method))
@@ -167,18 +165,13 @@ func (s *Server) handleToolsCall(ctx context.Context, req *JSONRPCRequest, trace
 
 	// Store trace ID in context for tool handlers
 	ctx = context.WithValue(ctx, TraceIDKey, traceID)
-
-	// Execute tool. Tool execution errors are actionable results with
-	// isError=true, not JSON-RPC protocol errors.
 	result, err := tool.Handler(ctx, arguments)
 	if err != nil {
 		return marshalResultResponse(req.ID, s.toolResult(err.Error(), true))
 	}
 
-	// Build response - serialize result as JSON for cleaner output
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
-		// Fallback to string representation if JSON serialization fails
 		resultJSON = []byte(fmt.Sprintf("%v", result))
 	}
 

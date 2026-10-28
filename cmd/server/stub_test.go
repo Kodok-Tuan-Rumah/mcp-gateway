@@ -7,18 +7,6 @@ import (
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 )
 
-// stubRegistry memakai router PRODUCTION (bukan salinan), supaya test benar-benar
-// menguji wiring yang berjalan di server.
-//
-// Bentuk data stub sengaja mengikuti schema backend yang nyata:
-//
-//	search_arxiv    → answer + sources[].text/score/arxiv_id  (arxiv-research-assistant)
-//	research_rag    → answer + retrieved_chunks[].text/score   (rag-research)
-//	evaluate_answer → faithfulness_score + failure_mode       (llm-eval-framework)
-//
-// Stub lama memakai key "chunks" dan "faithfulness", sedangkan executor membaca
-// "results" dan "faithfulness_score" — akibatnya evaluate selalu dilewati dan
-// score selalu 0, jadi assertion lama tidak membuktikan apa pun.
 func newTestRegistry() *registry.Registry {
 	reg := registry.New()
 
@@ -78,7 +66,6 @@ func newTestRegistry() *registry.Registry {
 	return reg
 }
 
-// newTestServer menyalakan router production di atas stub registry.
 func newTestServer(reg *registry.Registry) *httptest.Server {
 	return httptest.NewServer(newRouter(reg))
 }

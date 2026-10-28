@@ -106,10 +106,6 @@ func TestExecute_RetrievedChunksCannotMixWithAnswerEvidence(t *testing.T) {
 	}
 }
 
-// TestExecute_ProviderErrorSkipsEvaluation memastikan dua hal: executor
-// menyalin failure_type/provider_error_kind dari response backend ke
-// ExecutionResult (provider error bukan abstention), dan evaluasi dilewati
-// karena jawaban sentinel bukan jawaban yang bisa dinilai.
 func TestExecute_ProviderErrorSkipsEvaluation(t *testing.T) {
 	reg := registry.New()
 	reg.Register("research_rag", func(_ context.Context, req registry.ToolRequest) registry.ToolResponse {

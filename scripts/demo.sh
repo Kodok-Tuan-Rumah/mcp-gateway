@@ -1,11 +1,3 @@
-#!/usr/bin/env bash
-# Verifikasi manual hasil pekerjaan minggu ini.
-# Menyalakan gateway sungguhan lalu menjalankan rangkaian request nyata.
-#
-# Pakai:  bash scripts/demo.sh
-# Tidak butuh service downstream — justru itu yang dibuktikan: kegagalan
-# downstream harus terlihat, bukan disamarkan jadi jawaban.
-
 set -uo pipefail
 
 PORT="${PORT:-8090}"

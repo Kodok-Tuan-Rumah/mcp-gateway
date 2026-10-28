@@ -13,7 +13,6 @@ const (
 )
 
 // planForBackend menyusun plan deterministik: satu langkah menjawab, lalu
-// evaluasi.
 func planForBackend(req api.AskRequest) planner.Plan {
 	switch req.Backend {
 	case api.BackendArxiv:

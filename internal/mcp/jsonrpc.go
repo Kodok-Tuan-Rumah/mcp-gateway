@@ -1,20 +1,12 @@
 package mcp
 
-// JSON-RPC 2.0 message types for MCP protocol
-// Based on: https://modelcontextprotocol.io/specification/2026-07-28/basic.md
-
-// ProtocolVersion is the only MCP revision this server implements.
 const ProtocolVersion = "2026-07-28"
 
-// SupportedProtocolVersions is advertised by server/discover and returned in
-// UnsupportedProtocolVersionError so clients can retry with a known version.
 var SupportedProtocolVersions = []string{ProtocolVersion}
 
-// JSONRPCRequest represents a JSON-RPC 2.0 request. Protocol metadata lives in
-// params._meta, as required by the 2026-07-28 per-request model.
 type JSONRPCRequest struct {
 	JSONRPC string                 `json:"jsonrpc"`
-	ID      interface{}            `json:"id"` // string or number, MUST NOT be null
+	ID      interface{}            `json:"id"`
 	Method  string                 `json:"method"`
 	Params  map[string]interface{} `json:"params,omitempty"`
 }
@@ -69,7 +61,6 @@ const (
 )
 
 // Helper functions for creating error responses
-
 func NewParseError(data interface{}) *JSONRPCError {
 	return &JSONRPCError{
 		Code:    ParseError,

@@ -1,0 +1,5 @@
+body { font-family: sans-serif; margin: 20px; }
+.claim { border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
+.green { background: #e6ffed; }
+.yellow { background: #fff8e1; }
+.red { background: #ffebee; }

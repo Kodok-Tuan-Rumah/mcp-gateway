@@ -9,26 +9,17 @@ import (
 	"github.com/malikimayzar/mcp-gateway/internal/tools"
 )
 
-// ExecutionResult adalah record internal eksekusi plan.
-//
-// BUKAN bentuk JSON publik. Respons publik adalah api.GatewayResponse
-// (internal/api/contract.go) — lihat docs/api-contract.md. Field di sini masih
-// PascalCase; jawaban dan metadata backend dipetakan ke kontrak publik melalui
-// api.GatewayResponse sebelum dikirim.
+// ExecutionResult adalah record internal eksekusi plan
 type ExecutionResult struct {
-	Query    string
-	Steps    []StepResult
-	Answer   string
-	Context  string
-	Evidence []api.Evidence
-	Model    string
-	Latency  *api.StageLatency
-	Score    float64
-
-	Abstained bool
-	// FailureType dipertahankan dari backend yang menjawab ("" berarti backend
-	// tidak melaporkan kegagalan). Isinya dipetakan ke kontrak publik di
-	// cmd/server/respond.go — bukan di sini.
+	Query             string
+	Steps             []StepResult
+	Answer            string
+	Context           string
+	Evidence          []api.Evidence
+	Model             string
+	Latency           *api.StageLatency
+	Score             float64
+	Abstained         bool
 	FailureType       string
 	ProviderErrorKind string
 }
@@ -67,8 +58,6 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 			switch {
 			case result.Abstained,
 				strings.TrimSpace(answer) == api.ArxivAbstainText,
-				// Kegagalan backend bukan abstention, tetapi jawaban sentinel
-				// yang menyertainya juga bukan jawaban yang bisa dinilai.
 				result.FailureType == api.FailureProviderError,
 				result.FailureType == api.FailureSanityCheck,
 				result.FailureType == api.FailureEmptyOutput:
@@ -101,14 +90,7 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 			continue
 		}
 
-		// extract answer dan context dari hasil tool
-		// search_arxiv dan research_rag sama-sama menghasilkan jawaban akhir;
-		// keduanya punya kontrak titik-ketik yang sama (AnswerText/ModelName/
-		// Evidence/Latency/IsAbstention).
 		if step.ToolName == "search_arxiv" || step.ToolName == "research_rag" {
-			// ResearchRAGResponse membawa taksonomi kegagalan backend sebagai
-			// field; ArxivQueryResponse tidak melaporkannya. Type switch dipakai
-			// karena field tidak bisa diminta lewat interface ad-hoc.
 			if rag, ok := resp.TypedResult.(tools.ResearchRAGResponse); ok {
 				if rag.FailureType != "" {
 					result.FailureType = rag.FailureType
@@ -130,9 +112,6 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 				result.Latency = typed.Latency()
 				result.Abstained = typed.IsAbstention()
 			} else {
-				// Keep compatibility with registry handlers that still return the
-				// wire-shaped Data map, while the production adapter passes its
-				// typed response through TypedResult.
 				if a, ok := resp.Data["answer"].(string); ok {
 					answer = a
 				}
@@ -140,10 +119,6 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 					result.Model = model
 				}
 				result.Evidence = evidenceFromToolData(resp.Data)
-				// failure_type disalin apa adanya untuk respond.go; klasifikasi
-				// abstensi mengikuti ResearchRAGResponse.IsAbstention: kegagalan
-				// operasional (provider_error/sanity_check/empty_output) BUKAN
-				// abstention walau decision REJECT atau answer sentinel.
 				failure, _ := resp.Data["failure_type"].(string)
 				failureClass := failure == api.FailureProviderError ||
 					failure == api.FailureSanityCheck ||

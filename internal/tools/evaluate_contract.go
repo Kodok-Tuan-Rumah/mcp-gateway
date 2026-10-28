@@ -12,8 +12,6 @@ type EvaluateAnswerRequest struct {
 	Question string `json:"question"`
 }
 
-// EvaluateAnswerResponse matches the evaluator's HTTP response. EvaluatorVersion
-// is optional during rolling upgrades where the old service may still be live.
 type EvaluateAnswerResponse struct {
 	FaithfulnessScore float64 `json:"faithfulness_score"`
 	FailureMode       string  `json:"failure_mode"`
