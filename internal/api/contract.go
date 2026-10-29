@@ -29,6 +29,10 @@ const (
 
 const ArxivAbstainText = "Not found in context."
 const RAGAbstainText = "INSUFFICIENT_CONTEXT"
+// RAGAbstainAnswerText is the literal answer string rag-research returns from
+// its _abstain_response path (src/api/main.py). Used for abstention detection
+// when the backend does not set decision=="REJECT" or failure_type.
+const RAGAbstainAnswerText = "The available information is not sufficient to provide a reliable answer."
 
 const (
 	FailureNone                  = "none"

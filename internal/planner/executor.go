@@ -130,7 +130,8 @@ func Execute(ctx context.Context, reg *registry.Registry, plan Plan) ExecutionRe
 					if failure == api.FailureInsufficientContext || failure == api.FailureUnsupportedClaims {
 						result.Abstained = true
 					}
-					if ans, ok := resp.Data["answer"].(string); ok && ans == api.RAGAbstainText {
+					if ans, ok := resp.Data["answer"].(string); ok &&
+						(ans == api.RAGAbstainText || ans == api.RAGAbstainAnswerText) {
 						result.Abstained = true
 					}
 				}

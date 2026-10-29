@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -144,8 +145,8 @@ func maskDSN(dsn string) string {
 	if dsn == "" {
 		return ""
 	}
-	// Simple mask - replace password with ***
-	return dsn
+	// Mask the password value so credentials are never written to logs.
+	return regexp.MustCompile(`(?i)(password=)[^ ]*`).ReplaceAllString(dsn, "${1}***")
 }
 
 // newRegistry mendaftarkan adapter yang didukung gateway.

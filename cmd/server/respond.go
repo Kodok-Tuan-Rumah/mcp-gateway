@@ -63,7 +63,18 @@ func applyDecision(resp *api.GatewayResponse, result planner.ExecutionResult) {
 
 	case strings.TrimSpace(result.Answer) == api.ArxivAbstainText:
 		resp.Decision = api.DecisionAbstain
-		resp.FailureType = api.FailureInsufficientContext
+		resp.FailureType = answerFailureType(answerStep)
+		if resp.FailureType == api.FailureNone {
+			resp.FailureType = api.FailureInsufficientContext
+		}
+
+	case strings.TrimSpace(result.Answer) == api.RAGAbstainText ||
+		strings.TrimSpace(result.Answer) == api.RAGAbstainAnswerText:
+		resp.Decision = api.DecisionAbstain
+		resp.FailureType = answerFailureType(answerStep)
+		if resp.FailureType == api.FailureNone {
+			resp.FailureType = api.FailureInsufficientContext
+		}
 
 	case result.Abstained:
 		resp.Decision = api.DecisionAbstain
