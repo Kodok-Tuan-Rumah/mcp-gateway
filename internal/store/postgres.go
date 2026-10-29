@@ -353,16 +353,18 @@ func GetAuditReport(ctx context.Context, id string) (map[string]interface{}, err
 	}
 	row := db.QueryRowContext(ctx, `SELECT id, api_key_tier, status, claim_count, summary, share_token, share_expires_at, created_at FROM audit_reports WHERE id=$1`, id)
 	var r AuditReport
+	var tier sql.NullString
 	var summary sql.NullString
 	var shareToken sql.NullString
 	var shareExpires sql.NullTime
-	err := row.Scan(&r.ID, &r.APIKeyTier, &r.Status, &r.ClaimCount, &summary, &shareToken, &shareExpires, &r.CreatedAt)
+	err := row.Scan(&r.ID, &tier, &r.Status, &r.ClaimCount, &summary, &shareToken, &shareExpires, &r.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	r.APIKeyTier = tier.String
 	r.Summary = summary.String
 	r.ShareToken = shareToken.String
 	if shareExpires.Valid {

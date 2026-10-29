@@ -71,11 +71,11 @@ func GetJSON(baseURL, path string, timeout time.Duration) (map[string]interface{
 	return out, nil
 }
 
-// BuildReport runs the full audit pipeline and persists a report. Returns report id.
-func BuildReport(ctx context.Context, claims []string, tier string) (string, string, error) {
+// BuildReport runs the full audit pipeline and persists a report. Returns report id, share token, and dossier.
+func BuildReport(ctx context.Context, claims []string, tier string) (string, string, map[string]interface{}, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
 	verifyResp, verr := PostJSON(cfg.RAG.BaseURL, "/verify_claims", map[string]interface{}{"claims": claims, "top_k": 5}, cfg.RAG.Timeout)
@@ -167,7 +167,14 @@ func BuildReport(ctx context.Context, claims []string, tier string) (string, str
 	}
 
 	claimMaps := make([]map[string]interface{}, len(cds))
+	abstained := 0
+	supportedDecisions := 0
 	for i, cd := range cds {
+		if cd.Decision == "abstain" {
+			abstained++
+		} else {
+			supportedDecisions++
+		}
 		claimMaps[i] = map[string]interface{}{
 			"claim":                 cd.Claim,
 			"decision":              cd.Decision,
@@ -180,14 +187,44 @@ func BuildReport(ctx context.Context, claims []string, tier string) (string, str
 		}
 	}
 	summary := map[string]interface{}{"claim_count": len(cds)}
+
+	// metrics from evaluator summary if available
+	metrics := map[string]interface{}{
+		"claim_count": len(cds),
+		"supported_decisions": supportedDecisions,
+		"abstained":           abstained,
+	}
+	if evalResp != nil {
+		if s, ok := evalResp["summary"].(map[string]interface{}); ok {
+			metrics["avg_faithfulness"] = s["avg_faithfulness"]
+			metrics["supported_pct"] = s["supported_pct"]
+			metrics["partial_pct"] = s["partial_pct"]
+			metrics["unsupported_pct"] = s["unsupported_pct"]
+		}
+	}
+
 	reportID, _, err := store.CreateAuditReport(ctx, tier, claimMaps, summary)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
 	token, _ := GenerateShareToken()
 	expires := time.Now().Add(30 * 24 * time.Hour)
 	_ = store.SetShareToken(ctx, reportID, token, expires)
 
-	return reportID, token, nil
+	dossier := map[string]interface{}{
+		"report_id":   reportID,
+		"report_url":  "/reports/" + reportID,
+		"status":      "completed",
+		"claim_count": len(cds),
+		"metrics":     metrics,
+		"claims":      claimMaps,
+		"summary":     summary,
+	}
+	if token != "" {
+		dossier["share_token"] = token
+		dossier["share_url"] = "/r/" + token
+	}
+
+	return reportID, token, dossier, nil
 }

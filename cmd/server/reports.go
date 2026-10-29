@@ -1,76 +1,18 @@
 package main
 
 import (
-	"bytes"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"regexp"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/malikimayzar/mcp-gateway/internal/audit"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
 )
-
-// generateShareToken returns a 128-bit hex token.
-func generateShareToken() (string, error) {
-	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
-}
-
-func postJSONHTTP(baseURL, path string, payload interface{}, timeout time.Duration) (map[string]interface{}, error) {
-	b, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", strings.TrimRight(baseURL, "/")+path, bytes.NewReader(b))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, string(raw))
-	}
-	var out map[string]interface{}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func getJSON(baseURL, path string, timeout time.Duration) (map[string]interface{}, error) {
-	req, err := http.NewRequest("GET", strings.TrimRight(baseURL, "/")+path, nil)
-	if err != nil {
-		return nil, err
-	}
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, string(raw))
-	}
-	var out map[string]interface{}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		// maybe array
-		return nil, err
-	}
-	return out, nil
-}
 
 func handleCreateReport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -89,11 +31,16 @@ func handleCreateReport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "claims required"})
 		return
 	}
+	if len(req.Claims) > 50 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "too many claims (max 50)"})
+		return
+	}
 
 	tier := r.Header.Get("X-API-Key-Tier")
-	reportID, token, err := audit.BuildReport(r.Context(), req.Claims, tier)
+	reportID, token, _, err := audit.BuildReport(r.Context(), req.Claims, tier)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("[reports] create failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
@@ -104,15 +51,25 @@ func handleCreateReport(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// reportIDPattern matches canonical UUID form; prevents raw Postgres casts
+// from turning malformed path segments into 500s.
+var reportIDPattern = regexp.MustCompile(
+	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
 func handleGetReport(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !reportIDPattern.MatchString(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid report id"})
+		return
+	}
 	rep, err := store.GetAuditReport(r.Context(), id)
 	if err != nil {
 		if err == store.ErrNotFound {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 			return
 		}
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		log.Printf("[reports] get failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
 	writeJSON(w, http.StatusOK, rep)
@@ -120,9 +77,18 @@ func handleGetReport(w http.ResponseWriter, r *http.Request) {
 
 func handleExportReport(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !reportIDPattern.MatchString(id) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid report id"})
+		return
+	}
 	rep, err := store.GetAuditReport(r.Context(), id)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		if err == store.ErrNotFound {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
+		log.Printf("[reports] export failed: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
 	if strings.HasSuffix(r.URL.Path, ".json") {
@@ -144,5 +110,3 @@ func handleShareReport(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, rep)
 }
-
-var _ = time.Now

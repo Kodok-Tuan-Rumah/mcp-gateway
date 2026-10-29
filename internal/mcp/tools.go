@@ -121,16 +121,18 @@ func RegisterGatewayTools(server *Server, cfg config.Config) {
 			if len(claims) == 0 {
 				return nil, fmt.Errorf("claims required")
 			}
-			reportID, _, err := audit.BuildReport(ctx, claims, "")
+			reportID, _, dossier, err := audit.BuildReport(ctx, claims, "")
 			if err != nil {
 				return nil, fmt.Errorf("audit report failed: %w", err)
 			}
-			return map[string]interface{}{
-				"report_id":  reportID,
-				"report_url": "/reports/" + reportID,
-				"status":     "completed",
-				"claim_count": len(claims),
-			}, nil
+			if dossier == nil {
+				dossier = map[string]interface{}{}
+			}
+			dossier["report_id"] = reportID
+			dossier["report_url"] = "/reports/" + reportID
+			dossier["status"] = "completed"
+			dossier["claim_count"] = len(claims)
+			return dossier, nil
 		},
 	})
 }

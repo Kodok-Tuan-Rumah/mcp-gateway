@@ -52,3 +52,26 @@ func TestReports_ShareUnknownTokenReturns404(t *testing.T) {
 		t.Fatalf("status: got %d want %d", rr.Code, http.StatusNotFound)
 	}
 }
+
+func TestReports_InvalidReportIDReturns400(t *testing.T) {
+	r := newReportsRouter()
+	req := httptest.NewRequest("GET", "/reports/not-a-uuid", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestReports_OverCapClaimsReturns400(t *testing.T) {
+	r := newReportsRouter()
+	claims := make([]string, 51)
+	body, _ := json.Marshal(map[string]interface{}{"claims": claims})
+	req := httptest.NewRequest("POST", "/reports", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want %d", rr.Code, http.StatusBadRequest)
+	}
+}
