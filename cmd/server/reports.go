@@ -247,7 +247,9 @@ func handleExportReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	md := fmt.Sprintf("# Audit Report %s\n\nStatus: %s\nClaims: %v\n", rep["report_id"], rep["status"], rep["claim_count"])
-	writeJSON(w, http.StatusOK, map[string]string{"markdown": md})
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(md))
 }
 
 func handleShareReport(w http.ResponseWriter, r *http.Request) {
