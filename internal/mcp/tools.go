@@ -94,7 +94,7 @@ func RegisterGatewayTools(server *Server, cfg config.Config) {
 	// Tool 3: generate_audit_dossier → maps to evaluate_answer
 	server.registry.RegisterTool(Tool{
 		Name:        "generate_audit_dossier",
-		Description: "Generate an audit dossier by evaluating an answer against evidence",
+		Description: "Generate an audit dossier: per-claim verification with metrics, evidence, and optional report_url",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

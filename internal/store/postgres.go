@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"embed"
 	"errors"
 	"fmt"
@@ -38,6 +39,9 @@ const (
 const LogTable = "gateway_query_logs"
 
 var db *sql.DB
+
+// ErrNotFound is returned when a requested report does not exist.
+var ErrNotFound = errors.New("not found")
 
 // Init membuka koneksi PostgreSQL dengan connection pooling.
 //
@@ -256,4 +260,121 @@ func Close() {
 	if db != nil {
 		_ = db.Close()
 	}
+}
+
+// AuditReport is a persisted audit dossier.
+type AuditReport struct {
+	ID               string
+	APIKeyTier       string
+	Status           string
+	ClaimCount       int
+	Summary          string
+	ShareToken       string
+	ShareExpiresAt   *time.Time
+	CreatedAt        time.Time
+}
+
+// CreateAuditReport inserts a new report and its claims. Returns report id and share token.
+func CreateAuditReport(ctx context.Context, tier string, claims []map[string]interface{}, summary map[string]interface{}) (string, string, error) {
+	if db == nil {
+		return "", "", errors.New("db not initialized")
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", "", err
+	}
+	defer tx.Rollback()
+
+	// generate share token (128-bit via crypto/rand) — done by caller ideally; here use DB gen.
+	var reportID string
+	summaryJSON, _ := jsonMarshal(summary)
+	err = tx.QueryRowContext(ctx, `
+		INSERT INTO audit_reports (api_key_tier, status, claim_count, summary)
+		VALUES ($1, 'completed', $2, $3::jsonb)
+		RETURNING id`, nullIfEmpty(tier), len(claims), summaryJSON).Scan(&reportID)
+	if err != nil {
+		return "", "", err
+	}
+
+	for i, c := range claims {
+		ev, _ := jsonMarshal(c["evidence"])
+		sa, _ := jsonMarshal(c["span_attribution"])
+		evl, _ := jsonMarshal(c["evaluation"])
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO audit_report_claims (report_id, claim_index, claim, decision, confidence_zone,
+				calibrated_confidence, failure_type, evidence, span_attribution, evaluation)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb)`,
+			reportID, i, c["claim"], c["decision"], c["confidence_zone"],
+			c["calibrated_confidence"], c["failure_type"], ev, sa, evl)
+		if err != nil {
+			return "", "", err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", "", err
+	}
+	return reportID, "", nil
+}
+
+// GetAuditReport fetches a report with its claims.
+func GetAuditReport(ctx context.Context, id string) (map[string]interface{}, error) {
+	if db == nil {
+		return nil, errors.New("db not initialized")
+	}
+	row := db.QueryRowContext(ctx, `SELECT id, api_key_tier, status, claim_count, summary, share_token, share_expires_at, created_at FROM audit_reports WHERE id=$1`, id)
+	var r AuditReport
+	var summary sql.NullString
+	var shareToken sql.NullString
+	var shareExpires sql.NullTime
+	err := row.Scan(&r.ID, &r.APIKeyTier, &r.Status, &r.ClaimCount, &summary, &shareToken, &shareExpires, &r.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	r.Summary = summary.String
+	r.ShareToken = shareToken.String
+	if shareExpires.Valid {
+		r.ShareExpiresAt = &shareExpires.Time
+	}
+
+	// fetch claims
+	var claims []map[string]interface{}
+	// simple: read manually
+	rows2, _ := db.QueryContext(ctx, `SELECT claim_index, claim, decision, confidence_zone, calibrated_confidence, failure_type, evidence::text, span_attribution::text, evaluation::text FROM audit_report_claims WHERE report_id=$1 ORDER BY claim_index`, id)
+	defer rows2.Close()
+	for rows2.Next() {
+		var ci int
+		var claim, decision, zone, ft string
+		var conf sql.NullFloat64
+		var ev, sa, evl sql.NullString
+		if err := rows2.Scan(&ci, &claim, &decision, &zone, &conf, &ft, &ev, &sa, &evl); err != nil {
+			continue
+		}
+		claims = append(claims, map[string]interface{}{
+			"claim_index": ci, "claim": claim, "decision": decision,
+			"confidence_zone": zone, "calibrated_confidence": conf.Float64,
+			"failure_type": ft, "evidence": ev.String, "span_attribution": sa.String,
+			"evaluation": evl.String,
+		})
+	}
+
+	return map[string]interface{}{
+		"report_id": r.ID, "status": r.Status, "claim_count": r.ClaimCount,
+		"summary": r.Summary, "share_token": r.ShareToken, "claims": claims,
+		"created_at": r.CreatedAt,
+	}, nil
+}
+
+func jsonMarshal(v interface{}) (string, error) {
+	if v == nil {
+		return "null", nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "null", err
+	}
+	return string(b), nil
 }
