@@ -209,9 +209,15 @@ func handleCreateReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	token, _ := generateShareToken()
+	expires := time.Now().Add(30 * 24 * time.Hour)
+	_ = store.SetShareToken(r.Context(), reportID, token, expires)
+
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
-		"report_id": reportID,
-		"status":    "completed",
+		"report_id":   reportID,
+		"status":      "completed",
+		"share_token": token,
+		"share_url":   "/r/" + token,
 	})
 }
 
@@ -246,7 +252,12 @@ func handleExportReport(w http.ResponseWriter, r *http.Request) {
 
 func handleShareReport(w http.ResponseWriter, r *http.Request) {
 	token := chi.URLParam(r, "token")
-	writeJSON(w, http.StatusOK, map[string]string{"share_token": token, "status": "ok"})
+	rep, err := store.GetAuditReportByShareToken(r.Context(), token)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found or expired"})
+		return
+	}
+	writeJSON(w, http.StatusOK, rep)
 }
 
 var _ = time.Now
