@@ -256,6 +256,35 @@ func LogAudit(ctx context.Context, a AuditLog) {
 	log.Printf("[store] audit logged | request=%s backend=%s decision=%s", a.RequestID, a.Backend, a.Decision)
 }
 
+// SetShareToken stores a share token + TTL on a report.
+func SetShareToken(ctx context.Context, reportID, token string, expiresAt time.Time) error {
+	if db == nil {
+		return errors.New("db not initialized")
+	}
+	_, err := db.ExecContext(ctx, `UPDATE audit_reports SET share_token=$1, share_expires_at=$2 WHERE id=$3`, token, expiresAt, reportID)
+	return err
+}
+
+// GetAuditReportByShareToken fetches a report (read-only) by share token if not expired.
+func GetAuditReportByShareToken(ctx context.Context, token string) (map[string]interface{}, error) {
+	if db == nil {
+		return nil, errors.New("db not initialized")
+	}
+	var id string
+	var expires sql.NullTime
+	err := db.QueryRowContext(ctx, `SELECT id, share_expires_at FROM audit_reports WHERE share_token=$1`, token).Scan(&id, &expires)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if expires.Valid && time.Now().After(expires.Time) {
+		return nil, ErrNotFound
+	}
+	return GetAuditReport(ctx, id)
+}
+
 func Close() {
 	if db != nil {
 		_ = db.Close()
