@@ -5,6 +5,7 @@
 package middleware
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -38,6 +39,7 @@ type APIKeyStore struct {
 	mu    sync.RWMutex
 	keys  map[string]struct{}
 	tiers map[string]TierConfig // key → tier (empty = default tier)
+	orgs  map[string]string     // key → org_id (empty = key itself)
 }
 
 // NewAPIKeyStore creates a new key store with the given keys (all default tier).
@@ -45,6 +47,13 @@ func NewAPIKeyStore(keys []string) *APIKeyStore {
 	s := &APIKeyStore{
 		keys:  make(map[string]struct{}, len(keys)),
 		tiers: make(map[string]TierConfig),
+		orgs:  make(map[string]string),
+	}
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if k != "" {
+			s.orgs[k] = k
+		}
 	}
 	for _, k := range keys {
 		k = strings.TrimSpace(k)
@@ -101,6 +110,16 @@ func (s *APIKeyStore) Tier(key string) TierConfig {
 	return DefaultTier
 }
 
+// OrgID returns the org id for a given key (defaults to the key itself).
+func (s *APIKeyStore) OrgID(key string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if o, ok := s.orgs[key]; ok && o != "" {
+		return o
+	}
+	return key
+}
+
 // SetTier sets the tier for a key.
 func (s *APIKeyStore) SetTier(key, tierName string) {
 	s.mu.Lock()
@@ -117,6 +136,7 @@ func (s *APIKeyStore) Add(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.keys[key] = struct{}{}
+	s.orgs[key] = key
 }
 
 // AddWithTier adds a new key with a specific tier.
@@ -129,6 +149,7 @@ func (s *APIKeyStore) AddWithTier(key, tierName string) {
 	defer s.mu.Unlock()
 	s.keys[key] = struct{}{}
 	s.tiers[key] = tierFromName(tierName)
+	s.orgs[key] = key
 }
 
 // Remove removes a key from the store.
@@ -137,6 +158,7 @@ func (s *APIKeyStore) Remove(key string) {
 	defer s.mu.Unlock()
 	delete(s.keys, key)
 	delete(s.tiers, key)
+	delete(s.orgs, key)
 }
 
 // Replace replaces all keys with the new set (default tier).
@@ -145,10 +167,12 @@ func (s *APIKeyStore) Replace(keys []string) {
 	defer s.mu.Unlock()
 	s.keys = make(map[string]struct{}, len(keys))
 	s.tiers = make(map[string]TierConfig)
+	s.orgs = make(map[string]string)
 	for _, k := range keys {
 		k = strings.TrimSpace(k)
 		if k != "" {
 			s.keys[k] = struct{}{}
+			s.orgs[k] = k
 		}
 	}
 }
@@ -159,10 +183,12 @@ func (s *APIKeyStore) ReplaceWithTiers(keys []string, tierMap map[string]string)
 	defer s.mu.Unlock()
 	s.keys = make(map[string]struct{}, len(keys))
 	s.tiers = make(map[string]TierConfig)
+	s.orgs = make(map[string]string)
 	for _, k := range keys {
 		k = strings.TrimSpace(k)
 		if k != "" {
 			s.keys[k] = struct{}{}
+			s.orgs[k] = k
 		}
 	}
 	for key, tierName := range tierMap {
@@ -267,7 +293,9 @@ func (h *authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !enabled || h.exempt[r.URL.Path] {
-		h.next.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), tierContextKey, DefaultTier.Name)
+		ctx = context.WithValue(ctx, orgContextKey, "")
+		h.next.ServeHTTP(w, r.WithContext(ctx))
 		return
 	}
 
@@ -294,7 +322,37 @@ func (h *authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.next.ServeHTTP(w, r)
+	orgID := ""
+	if h.auth.KeyStore != nil {
+		orgID = h.auth.KeyStore.OrgID(key)
+	}
+	ctx := context.WithValue(r.Context(), tierContextKey, h.auth.KeyStore.Tier(key).Name)
+	ctx = context.WithValue(ctx, orgContextKey, orgID)
+	h.next.ServeHTTP(w, r.WithContext(ctx))
+}
+
+// contextKey is an unexported type for context keys in this package.
+type contextKey string
+
+// tierContextKey carries the resolved tier name through the request context.
+const tierContextKey contextKey = "api_key_tier"
+const orgContextKey contextKey = "org_id"
+
+// TierFromContext returns the tier name resolved by auth middleware, or "" if
+// auth did not run (e.g. disabled or exempt path).
+func TierFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(tierContextKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// OrgIDFromContext returns the org id resolved by auth middleware, or "".
+func OrgIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(orgContextKey).(string); ok {
+		return v
+	}
+	return ""
 }
 
 func extractAPIKey(r *http.Request, headerName, headerPrefix string) string {

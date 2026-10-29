@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/malikimayzar/mcp-gateway/internal/config"
+	"github.com/malikimayzar/mcp-gateway/internal/middleware"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
 )
 
@@ -203,13 +204,14 @@ func BuildReport(ctx context.Context, claims []string, tier string) (string, str
 		}
 	}
 
-	reportID, _, err := store.CreateAuditReport(ctx, tier, claimMaps, summary)
+	orgID := middleware.OrgIDFromContext(ctx)
+	reportID, _, err := store.CreateAuditReport(ctx, orgID, tier, claimMaps, summary)
 	if err != nil {
 		return "", "", nil, err
 	}
 
 	token, _ := GenerateShareToken()
-	expires := time.Now().Add(30 * 24 * time.Hour)
+	expires := time.Now().Add(30 * time.Hour)
 	_ = store.SetShareToken(ctx, reportID, token, expires)
 
 	dossier := map[string]interface{}{

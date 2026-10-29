@@ -142,10 +142,12 @@ func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpSer
 
 	// Audit reports (Vertical 1 P0)
 	r.Post("/reports", handleCreateReport)
+	r.Get("/reports", handleListReports)
 	r.Get("/reports/{id}", handleGetReport)
 	r.Get("/reports/{id}/export.md", handleExportReport)
 	r.Get("/reports/{id}/export.json", handleExportReport)
 	r.Get("/r/{token}", handleShareReport)
+	r.Post("/reports/{id}/revoke", handleRevokeReport)
 
 	// Static audit dossier UI
 	auditDir := "web/audit"

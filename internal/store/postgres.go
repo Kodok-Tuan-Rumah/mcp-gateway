@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/lib/pq" // postgres driver
@@ -265,24 +266,79 @@ func SetShareToken(ctx context.Context, reportID, token string, expiresAt time.T
 	return err
 }
 
-// GetAuditReportByShareToken fetches a report (read-only) by share token if not expired.
+// GetAuditReportByShareToken fetches a report (read-only) by share token if not expired and not revoked.
 func GetAuditReportByShareToken(ctx context.Context, token string) (map[string]interface{}, error) {
 	if db == nil {
 		return nil, errors.New("db not initialized")
 	}
 	var id string
 	var expires sql.NullTime
-	err := db.QueryRowContext(ctx, `SELECT id, share_expires_at FROM audit_reports WHERE share_token=$1`, token).Scan(&id, &expires)
+	var revoked bool
+	err := db.QueryRowContext(ctx, `SELECT id, share_expires_at, share_revoked FROM audit_reports WHERE share_token=$1`, token).Scan(&id, &expires, &revoked)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	if revoked {
+		return nil, ErrNotFound
+	}
 	if expires.Valid && time.Now().After(expires.Time) {
 		return nil, ErrNotFound
 	}
 	return GetAuditReport(ctx, id)
+}
+
+// RevokeShareToken soft-revokes a share token so /r/{token} returns 404.
+func RevokeShareToken(ctx context.Context, reportID string) error {
+	if db == nil {
+		return errors.New("db not initialized")
+	}
+	_, err := db.ExecContext(ctx, `UPDATE audit_reports SET share_revoked=TRUE WHERE id=$1`, reportID)
+	return err
+}
+
+// ListAuditReports returns reports for an org, newest first.
+func ListAuditReports(ctx context.Context, orgID string, limit, offset int) ([]map[string]interface{}, error) {
+	if db == nil {
+		return nil, errors.New("db not initialized")
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	q := `SELECT id, status, claim_count, share_token, share_expires_at, created_at
+		FROM audit_reports WHERE ($1 = '' OR org_id = $1)
+		ORDER BY created_at DESC LIMIT $2 OFFSET $3`
+	rows, err := db.QueryContext(ctx, q, orgID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []map[string]interface{}{}
+	for rows.Next() {
+		var id, status string
+		var claimCount int
+		var shareToken sql.NullString
+		var shareExpires sql.NullTime
+		var created time.Time
+		if err := rows.Scan(&id, &status, &claimCount, &shareToken, &shareExpires, &created); err != nil {
+			continue
+		}
+		item := map[string]interface{}{
+			"report_id": id, "status": status, "claim_count": claimCount,
+			"created_at": created,
+		}
+		if shareToken.Valid && shareToken.String != "" {
+			item["share_token"] = shareToken.String
+			item["share_url"] = "/r/" + shareToken.String
+		}
+		out = append(out, item)
+	}
+	return out, nil
 }
 
 func Close() {
@@ -304,7 +360,7 @@ type AuditReport struct {
 }
 
 // CreateAuditReport inserts a new report and its claims. Returns report id and share token.
-func CreateAuditReport(ctx context.Context, tier string, claims []map[string]interface{}, summary map[string]interface{}) (string, string, error) {
+func CreateAuditReport(ctx context.Context, orgID, tier string, claims []map[string]interface{}, summary map[string]interface{}) (string, string, error) {
 	if db == nil {
 		return "", "", errors.New("db not initialized")
 	}
@@ -318,9 +374,9 @@ func CreateAuditReport(ctx context.Context, tier string, claims []map[string]int
 	var reportID string
 	summaryJSON, _ := jsonMarshal(summary)
 	err = tx.QueryRowContext(ctx, `
-		INSERT INTO audit_reports (api_key_tier, status, claim_count, summary)
-		VALUES ($1, 'completed', $2, $3::jsonb)
-		RETURNING id`, nullIfEmpty(tier), len(claims), summaryJSON).Scan(&reportID)
+		INSERT INTO audit_reports (org_id, api_key_tier, status, claim_count, summary)
+		VALUES ($1, $2, 'completed', $3, $4::jsonb)
+		RETURNING id`, nullIfEmpty(orgID), nullIfEmpty(tier), len(claims), summaryJSON).Scan(&reportID)
 	if err != nil {
 		return "", "", err
 	}
@@ -387,8 +443,9 @@ func GetAuditReport(ctx context.Context, id string) (map[string]interface{}, err
 		claims = append(claims, map[string]interface{}{
 			"claim_index": ci, "claim": claim, "decision": decision,
 			"confidence_zone": zone, "calibrated_confidence": conf.Float64,
-			"failure_type": ft, "evidence": ev.String, "span_attribution": sa.String,
-			"evaluation": evl.String,
+			"failure_type": ft, "evidence": parseJSONField(ev.String),
+			"span_attribution": parseJSONField(sa.String),
+			"evaluation": parseJSONField(evl.String),
 		})
 	}
 
@@ -399,6 +456,17 @@ func GetAuditReport(ctx context.Context, id string) (map[string]interface{}, err
 	}, nil
 }
 
+func parseJSONField(s string) interface{} {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "null" {
+		return nil
+	}
+	var v interface{}
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return s
+	}
+	return v
+}
 func jsonMarshal(v interface{}) (string, error) {
 	if v == nil {
 		return "null", nil

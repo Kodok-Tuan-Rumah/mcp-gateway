@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -73,5 +75,75 @@ func TestReports_OverCapClaimsReturns400(t *testing.T) {
 	r.ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status: got %d want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestReports_MissingClaimsFieldReturns400(t *testing.T) {
+	r := newReportsRouter()
+	body, _ := json.Marshal(map[string]interface{}{"not_claims": []string{"x"}})
+	req := httptest.NewRequest("POST", "/reports", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestReports_NonArrayClaimsReturns400(t *testing.T) {
+	r := newReportsRouter()
+	body, _ := json.Marshal(map[string]interface{}{"claims": "not-an-array"})
+	req := httptest.NewRequest("POST", "/reports", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want %d", rr.Code, http.StatusBadRequest)
+	}
+}
+
+func TestExportMarkdownContainsFullContent(t *testing.T) {
+	rep := map[string]interface{}{
+		"report_id":   "00000000-0000-0000-0000-000000000001",
+		"status":      "completed",
+		"claim_count": 1,
+		"summary":     "ringkasan laporan",
+		"created_at":  time.Date(2026, 10, 29, 15, 56, 0, 0, time.UTC),
+		"claims": []map[string]interface{}{
+			{
+				"claim_index":        0,
+				"claim":              "contoh klaim",
+				"decision":           "SUPPORTS",
+				"confidence_zone":    "green",
+				"calibrated_confidence": 0.92,
+				"failure_type":       "",
+				"evidence":           "bukti yang tersedia",
+				"span_attribution":   "dokumen A baris 3",
+				"evaluation":         "faithfulness=0.9, robust=0.8",
+			},
+		},
+	}
+	md := buildReportMarkdown(rep)
+	for _, want := range []string{
+		"# Audit Report 00000000-0000-0000-0000-000000000001",
+		"Status: completed",
+		"## Summary",
+		"ringkasan laporan",
+		"Total Claims: 1",
+		"### Claim 0",
+		"**Claim:** contoh klaim",
+		"**Decision:** SUPPORTS",
+		"**Zona:** green",
+		"**Confidence:** 0.92",
+		"**Evidence:**",
+		"bukti yang tersedia",
+		"**Sitasi (span attribution):**",
+		"dokumen A baris 3",
+		"**Blok evaluasi:**",
+		"faithfulness=0.9, robust=0.8",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, md)
+		}
 	}
 }
