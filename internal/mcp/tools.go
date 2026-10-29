@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/malikimayzar/mcp-gateway/internal/audit"
 	"github.com/malikimayzar/mcp-gateway/internal/config"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 	"github.com/malikimayzar/mcp-gateway/internal/tools"
@@ -91,44 +92,45 @@ func RegisterGatewayTools(server *Server, cfg config.Config) {
 		},
 	})
 
-	// Tool 3: generate_audit_dossier → maps to evaluate_answer
+	// Tool 3: generate_audit_dossier → builds a real audit report (dossier)
 	server.registry.RegisterTool(Tool{
 		Name:        "generate_audit_dossier",
-		Description: "Generate an audit dossier: per-claim verification with metrics, evidence, and optional report_url",
+		Description: "Generate an audit dossier: per-claim verification with metrics, evidence, and report_url",
 		InputSchema: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
-				"question": map[string]interface{}{
-					"type":        "string",
-					"description": "Original question or claim",
-				},
-				"answer": map[string]interface{}{
-					"type":        "string",
-					"description": "Answer to evaluate",
-				},
-				"context": map[string]interface{}{
-					"type":        "string",
-					"description": "Evidence context used to generate the answer",
+				"claims": map[string]interface{}{
+					"type":        "array",
+					"items":       map[string]interface{}{"type": "string"},
+					"description": "List of claims to audit",
 				},
 			},
-			"required": []string{"question", "answer", "context"},
+			"required": []string{"claims"},
 		},
 		Handler: func(ctx context.Context, params map[string]interface{}) (interface{}, error) {
-			// Get trace ID from context
-			traceID := GetTraceID(ctx)
-			
-			// Convert to registry.ToolRequest
-			req := registryToolRequest("evaluate_answer", params, traceID)
-			
-			// Call existing evaluate_answer tool
-			handler := tools.NewEvaluateAnswer(cfg.Evaluator)
-			resp := handler(ctx, req)
-			
-			if !resp.Success {
-				return nil, fmt.Errorf("evaluate_answer failed: %s", resp.Error)
+			claimsRaw, ok := params["claims"].([]interface{})
+			if !ok || len(claimsRaw) == 0 {
+				return nil, fmt.Errorf("claims required")
 			}
-			
-			return resp.Data, nil
+			claims := make([]string, 0, len(claimsRaw))
+			for _, c := range claimsRaw {
+				if s, ok := c.(string); ok {
+					claims = append(claims, s)
+				}
+			}
+			if len(claims) == 0 {
+				return nil, fmt.Errorf("claims required")
+			}
+			reportID, _, err := audit.BuildReport(ctx, claims, "")
+			if err != nil {
+				return nil, fmt.Errorf("audit report failed: %w", err)
+			}
+			return map[string]interface{}{
+				"report_id":  reportID,
+				"report_url": "/reports/" + reportID,
+				"status":     "completed",
+				"claim_count": len(claims),
+			}, nil
 		},
 	})
 }
