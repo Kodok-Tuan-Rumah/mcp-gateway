@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jung-kurt/gofpdf"
 	"github.com/malikimayzar/mcp-gateway/internal/audit"
 	"github.com/malikimayzar/mcp-gateway/internal/middleware"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
@@ -100,6 +102,19 @@ func handleExportReport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, rep)
 		return
 	}
+	if strings.HasSuffix(r.URL.Path, ".pdf") {
+		pdfBytes, err := buildReportPDF(rep)
+		if err != nil {
+			log.Printf("[reports] pdf render failed: %v", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+			return
+		}
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Header().Set("Content-Disposition", "inline; filename=\"report.pdf\"")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(pdfBytes)
+		return
+	}
 	md := buildReportMarkdown(rep)
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -179,6 +194,105 @@ func handleListReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"reports": items, "count": len(items)})
+}
+
+// buildReportPDF renders the persisted report as a PDF byte slice.
+func buildReportPDF(rep map[string]interface{}) ([]byte, error) {
+	pdf := gofpdf.New("P", "mm", "A4", "")
+	pdf.SetTitle(fmt.Sprintf("Audit Report %v", rep["report_id"]), true)
+	pdf.AddPage()
+	pdf.SetFont("Arial", "B", 16)
+	pdf.Cell(0, 10, fmt.Sprintf("Audit Report %v", rep["report_id"]))
+	pdf.Ln(12)
+	pdf.SetFont("Arial", "", 11)
+	pdf.Cell(0, 8, fmt.Sprintf("Status: %v", rep["status"]))
+	pdf.Ln(6)
+	pdf.Cell(0, 8, fmt.Sprintf("Total Claims: %v", rep["claim_count"]))
+	pdf.Ln(6)
+	if created, ok := rep["created_at"].(time.Time); ok && !created.IsZero() {
+		pdf.Cell(0, 8, fmt.Sprintf("Created: %s", created.Format(time.RFC3339)))
+		pdf.Ln(6)
+	}
+	if v, ok := rep["summary"].(string); ok && v != "" {
+		pdf.Ln(4)
+		pdf.SetFont("Arial", "B", 12)
+		pdf.Cell(0, 8, "Summary")
+		pdf.Ln(6)
+		pdf.SetFont("Arial", "", 10)
+		pdf.MultiCell(0, 6, v, "", "", false)
+		pdf.Ln(4)
+	}
+
+	claims, _ := rep["claims"].([]map[string]interface{})
+	if len(claims) == 0 {
+		pdf.Cell(0, 8, "No claims.")
+		var buf bytes.Buffer
+		if err := pdf.Output(&buf); err != nil {
+			return nil, err
+		}
+		return buf.Bytes(), nil
+	}
+
+	pdf.SetFont("Arial", "B", 12)
+	pdf.Cell(0, 8, "Claims")
+	pdf.Ln(8)
+
+	for _, c := range claims {
+		pdf.SetFont("Arial", "B", 11)
+		pdf.Cell(0, 8, fmt.Sprintf("Claim %v", c["claim_index"]))
+		pdf.Ln(6)
+		pdf.SetFont("Arial", "", 10)
+		if v, ok := c["claim"].(string); ok {
+			pdf.MultiCell(0, 6, "Claim: "+v, "", "", false)
+		}
+		if v, ok := c["decision"].(string); ok {
+			pdf.Cell(0, 6, "Decision: "+v)
+			pdf.Ln(5)
+		}
+		if v, ok := c["confidence_zone"].(string); ok {
+			pdf.Cell(0, 6, "Zone: "+v)
+			pdf.Ln(5)
+		}
+		if v, ok := c["calibrated_confidence"].(float64); ok {
+			pdf.Cell(0, 6, fmt.Sprintf("Confidence: %.2f", v))
+			pdf.Ln(5)
+		}
+		if v, ok := c["failure_type"].(string); ok && v != "" && v != "none" {
+			pdf.Cell(0, 6, "Failure Type: "+v)
+			pdf.Ln(5)
+		}
+		if ev := c["evidence"]; ev != nil {
+			pdf.SetFont("Arial", "B", 10)
+			pdf.Cell(0, 6, "Evidence:")
+			pdf.Ln(5)
+			pdf.SetFont("Arial", "", 9)
+			pdf.MultiCell(0, 5, fmt.Sprintf("%v", ev), "", "", false)
+			pdf.Ln(3)
+		}
+		if sa := c["span_attribution"]; sa != nil {
+			pdf.SetFont("Arial", "B", 10)
+			pdf.Cell(0, 6, "Span Attribution:")
+			pdf.Ln(5)
+			pdf.SetFont("Arial", "", 9)
+			pdf.MultiCell(0, 5, fmt.Sprintf("%v", sa), "", "", false)
+			pdf.Ln(3)
+		}
+		if evl := c["evaluation"]; evl != nil {
+			pdf.SetFont("Arial", "B", 10)
+			pdf.Cell(0, 6, "Evaluation:")
+			pdf.Ln(5)
+			pdf.SetFont("Arial", "", 9)
+			pdf.MultiCell(0, 5, fmt.Sprintf("%v", evl), "", "", false)
+			pdf.Ln(3)
+		}
+		pdf.Ln(4)
+	}
+
+	var buf bytes.Buffer
+	if err := pdf.Output(&buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 func handleShareReport(w http.ResponseWriter, r *http.Request) {

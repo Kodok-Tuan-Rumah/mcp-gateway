@@ -18,6 +18,7 @@ func newReportsRouter() *chi.Mux {
 	r.Get("/reports/{id}", handleGetReport)
 	r.Get("/reports/{id}/export.md", handleExportReport)
 	r.Get("/reports/{id}/export.json", handleExportReport)
+	r.Get("/reports/{id}/export.pdf", handleExportReport)
 	r.Get("/r/{token}", handleShareReport)
 	return r
 }
@@ -111,15 +112,15 @@ func TestExportMarkdownContainsFullContent(t *testing.T) {
 		"created_at":  time.Date(2026, 10, 29, 15, 56, 0, 0, time.UTC),
 		"claims": []map[string]interface{}{
 			{
-				"claim_index":        0,
-				"claim":              "contoh klaim",
-				"decision":           "SUPPORTS",
-				"confidence_zone":    "green",
+				"claim_index":           0,
+				"claim":                 "contoh klaim",
+				"decision":              "SUPPORTS",
+				"confidence_zone":       "green",
 				"calibrated_confidence": 0.92,
-				"failure_type":       "",
-				"evidence":           "bukti yang tersedia",
-				"span_attribution":   "dokumen A baris 3",
-				"evaluation":         "faithfulness=0.9, robust=0.8",
+				"failure_type":          "",
+				"evidence":              "bukti yang tersedia",
+				"span_attribution":      "dokumen A baris 3",
+				"evaluation":            "faithfulness=0.9, robust=0.8",
 			},
 		},
 	}
@@ -145,5 +146,48 @@ func TestExportMarkdownContainsFullContent(t *testing.T) {
 		if !strings.Contains(md, want) {
 			t.Fatalf("markdown missing %q:\n%s", want, md)
 		}
+	}
+}
+
+func TestExportPDFRendersMagicBytes(t *testing.T) {
+	rep := map[string]interface{}{
+		"report_id":   "00000000-0000-0000-0000-000000000001",
+		"status":      "completed",
+		"claim_count": 1,
+		"summary":     "ringkasan laporan",
+		"created_at":  time.Date(2026, 10, 29, 15, 56, 0, 0, time.UTC),
+		"claims": []map[string]interface{}{
+			{
+				"claim_index":           0,
+				"claim":                 "contoh klaim",
+				"decision":              "SUPPORTS",
+				"confidence_zone":       "green",
+				"calibrated_confidence": 0.92,
+				"failure_type":          "",
+				"evidence":              "bukti yang tersedia",
+				"span_attribution":      "dokumen A baris 3",
+				"evaluation":            "faithfulness=0.9, robust=0.8",
+			},
+		},
+	}
+	pdfBytes, err := buildReportPDF(rep)
+	if err != nil {
+		t.Fatalf("render pdf: %v", err)
+	}
+	if len(pdfBytes) == 0 {
+		t.Fatal("pdf empty")
+	}
+	if !bytes.HasPrefix(pdfBytes, []byte("%PDF-")) {
+		t.Fatalf("pdf magic bytes missing: %q", string(pdfBytes[:8]))
+	}
+}
+
+func TestReports_InvalidReportIDPDFReturns400(t *testing.T) {
+	r := newReportsRouter()
+	req := httptest.NewRequest("GET", "/reports/not-a-uuid/export.pdf", nil)
+	rr := httptest.NewRecorder()
+	r.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status: got %d want %d", rr.Code, http.StatusBadRequest)
 	}
 }
