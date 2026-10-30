@@ -103,6 +103,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GatewayResponse'
+              
+
+  /audit:
+    post:
+      tags: [ask]
+      summary: Audit a claim against indexed evidence
+      security:
+        - ApiKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AskRequest'
+      responses:
+        '200':
+          description: Audit result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GatewayResponse'
+        '401':
+          description: API key required/invalid
 
   /plan:
     post:
