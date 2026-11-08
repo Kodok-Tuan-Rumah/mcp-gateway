@@ -5,11 +5,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPerKeyRateLimit_TierFree(t *testing.T) {
 	store := NewAPIKeyStore([]string{"free-key"})
-	handler := PerKeyRateLimit(store, TierFree)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := PerKeyRateLimit(store, TierFree, "Authorization", "Bearer", nil, 5*time.Minute, 10000)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -38,7 +39,7 @@ func TestPerKeyRateLimit_TierFree(t *testing.T) {
 
 func TestPerKeyRateLimit_TierPro(t *testing.T) {
 	store := NewAPIKeyStoreWithTiers([]string{"pro-key"}, map[string]string{"pro-key": "pro"})
-	handler := PerKeyRateLimit(store, TierFree)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := PerKeyRateLimit(store, TierFree, "Authorization", "Bearer", nil, 5*time.Minute, 10000)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -67,7 +68,7 @@ func TestPerKeyRateLimit_TierPro(t *testing.T) {
 
 func TestPerKeyRateLimit_TierEnterprise(t *testing.T) {
 	store := NewAPIKeyStoreWithTiers([]string{"ent-key"}, map[string]string{"ent-key": "enterprise"})
-	handler := PerKeyRateLimit(store, TierFree)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := PerKeyRateLimit(store, TierFree, "Authorization", "Bearer", nil, 5*time.Minute, 10000)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -86,7 +87,7 @@ func TestPerKeyRateLimit_TierEnterprise(t *testing.T) {
 
 func TestPerKeyRateLimit_SetTier(t *testing.T) {
 	store := NewAPIKeyStore([]string{"test-key"})
-	limiter := NewPerKeyRateLimiter(store, TierFree)
+	limiter := NewPerKeyRateLimiter(store, TierFree, 5*time.Minute, 10000)
 
 	// Initially free tier
 	tier := limiter.TierFor("test-key")
@@ -104,7 +105,7 @@ func TestPerKeyRateLimit_SetTier(t *testing.T) {
 
 func TestPerKeyRateLimit_TierForUnknownKey(t *testing.T) {
 	store := NewAPIKeyStore([]string{})
-	limiter := NewPerKeyRateLimiter(store, TierPro)
+	limiter := NewPerKeyRateLimiter(store, TierPro, 5*time.Minute, 10000)
 
 	// Unknown key gets default tier
 	tier := limiter.TierFor("unknown-key")
@@ -115,7 +116,7 @@ func TestPerKeyRateLimit_TierForUnknownKey(t *testing.T) {
 
 func TestPerKeyRateLimit_ExemptPaths(t *testing.T) {
 	store := NewAPIKeyStore([]string{"test-key"})
-	handler := PerKeyRateLimit(store, TierFree)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := PerKeyRateLimit(store, TierFree, "Authorization", "Bearer", nil, 5*time.Minute, 10000)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 

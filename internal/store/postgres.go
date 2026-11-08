@@ -2,19 +2,36 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"embed"
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	_ "github.com/lib/pq" // postgres driver
 )
+
+// auditWriteFailuresTotal counts failed attempts to write audit/eval log rows.
+// A non-zero value indicates the audit trail is dropping execution evidence —
+// a critical failure for an audit product.
+var auditWriteFailuresTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "mcp_gateway_audit_write_failures_total",
+		Help: "Total number of failed audit/eval log writes",
+	},
+	[]string{"error_kind"},
+)
+
+func init() {
+	prometheus.MustRegister(auditWriteFailuresTotal)
+}
 
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
@@ -102,15 +119,21 @@ func InitWithPool(dsn string, maxOpen, maxIdle int64, maxLifetime, maxIdleTime t
 	log.Printf("[store] connected to PostgreSQL")
 }
 
-// applyMigrations menjalankan berkas .sql yang sudah diekstrak, berurutan.
-// Diekstrak ke direktori sementara karena lib/pq tidak bisa membaca dari
-// embed.FS.
+// applyMigrations runs embedded migration files in version order, using an
+// advisory lock so only one instance migrates at a time. Each migration is
+// recorded in schema_migrations with its SHA256 checksum; re-running is a
+// no-op unless a migration's checksum changed.
+//
+// Migration files must be named NNN_description.sql where NNN is the version.
+// Only "up" migrations are supported (no down).
 func applyMigrations(files []embed.FS) error {
-	dir, err := os.MkdirTemp("", "gw-migrations-")
-	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
+	// Collect all migration files from all embed sources.
+	type migration struct {
+		version string
+		name    string
+		body    string
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
+	var all []migration
 
 	for _, fs := range files {
 		entries, err := fs.ReadDir("migrations")
@@ -125,18 +148,118 @@ func applyMigrations(files []embed.FS) error {
 			if err != nil {
 				return fmt.Errorf("read %s: %w", entry.Name(), err)
 			}
-			path := filepath.Join(dir, entry.Name())
-			if err := os.WriteFile(path, body, 0o600); err != nil {
-				return fmt.Errorf("write %s: %w", path, err)
+			all = append(all, migration{
+				version: extractVersion(entry.Name()),
+				name:    entry.Name(),
+				body:    string(body),
+			})
+		}
+	}
+
+	// Sort by version string (zero-padded names sort correctly).
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].version < all[j].version
+	})
+
+	if len(all) == 0 {
+		return nil
+	}
+
+	// Acquire advisory lock within a transaction so only one instance
+	// migrates at a time. Lock is released automatically on commit/rollback.
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin lock tx: %w", err)
+	}
+	var lockResult int
+	if err := tx.QueryRow("SELECT pg_advisory_xact_lock(hashtext('mcp-gateway-schema-migrations'))").Scan(&lockResult); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("acquire advisory lock: %w", err)
+	}
+
+	// Ensure schema_migrations tracking table exists.
+	if _, err := tx.Exec(`
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version    TEXT PRIMARY KEY,
+			checksum   TEXT NOT NULL,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("create schema_migrations: %w", err)
+	}
+
+	// Load already-applied versions + checksums.
+	applied := make(map[string]string) // version -> checksum
+	rows, err := tx.Query("SELECT version, checksum FROM schema_migrations")
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("read schema_migrations: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var version, checksum string
+		if err := rows.Scan(&version, &checksum); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("scan schema_migrations: %w", err)
+		}
+		applied[version] = checksum
+	}
+
+	// Apply pending migrations.
+	for _, m := range all {
+		checksum := sha256sum(m.body)
+		existing, ok := applied[m.version]
+		if ok && existing == checksum {
+			continue // already applied, unchanged
+		}
+
+		// Run migration + record in same transaction.
+		if _, err := tx.Exec(m.body); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("apply migration %s (%s): %w", m.version, m.name, err)
+		}
+		if ok {
+			// Checksum changed: re-record.
+			if _, err := tx.Exec(`UPDATE schema_migrations SET checksum=$1, applied_at=NOW() WHERE version=$2`, checksum, m.version); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("update schema_migrations %s: %w", m.version, err)
 			}
-			if _, err := db.Exec(string(body)); err != nil {
-				return fmt.Errorf("apply %s: %w", entry.Name(), err)
+		} else {
+			if _, err := tx.Exec(`INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)`, m.version, checksum); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("insert schema_migrations %s: %w", m.version, err)
 			}
 		}
+		log.Printf("[store] migration applied: %s (checksum=%s)", m.name, checksum[:12])
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migrations: %w", err)
 	}
 	return nil
 }
 
+// extractVersion returns the zero-padded version prefix from a migration
+// filename like "001_gateway_query_logs.sql".
+func extractVersion(name string) string {
+	var v []byte
+	for _, c := range name {
+		if c >= '0' && c <= '9' {
+			v = append(v, byte(c))
+		} else {
+			break
+		}
+	}
+	return string(v)
+}
+
+// sha256sum returns the hex SHA256 of the given string.
+func sha256sum(s string) string {
+	h := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(h[:])
+}
+
+// migrate runs all embedded migrations with version tracking and advisory lock.
 func migrate() error {
 	return applyMigrations([]embed.FS{migrationsFS})
 }
@@ -191,9 +314,11 @@ func LogEval(ctx context.Context, e EvalLog) {
 	)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			auditWriteFailuresTotal.WithLabelValues("canceled").Inc()
 			log.Printf("[store] insert skipped (%s): request=%s", err, e.RequestID)
 			return
 		}
+		auditWriteFailuresTotal.WithLabelValues("db_error").Inc()
 		log.Printf("[store] insert failed: %v", err)
 		return
 	}
@@ -225,6 +350,9 @@ type AuditLog struct {
 	CalibratedDecision   string
 	EvidenceJSON         string
 	SpanJSON             string
+	// TenantID is the caller's tenant (UUID). Empty means tenant-scoping is not
+	// enforced for this record (e.g. auth disabled).
+	TenantID string
 }
 
 // LogAudit menyimpan audit trail. Kegagalan tidak boleh menggagalkan request.
@@ -235,8 +363,8 @@ func LogAudit(ctx context.Context, a AuditLog) {
 	_, err := db.ExecContext(ctx, `
 		INSERT INTO audit_trail
 			(request_id, backend, claim, decision, calibrated_confidence,
-			 calibrated_decision, evidence, span_level_attribution)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb)`,
+			 calibrated_decision, evidence, span_level_attribution, tenant_id)
+		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9)`,
 		nullIfEmpty(a.RequestID),
 		nullIfEmpty(a.Backend),
 		a.Claim,
@@ -245,6 +373,7 @@ func LogAudit(ctx context.Context, a AuditLog) {
 		nullIfEmpty(a.CalibratedDecision),
 		nullIfEmpty(a.EvidenceJSON),
 		nullIfEmpty(a.SpanJSON),
+		nullIfEmpty(a.TenantID),
 	)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -287,20 +416,38 @@ func GetAuditReportByShareToken(ctx context.Context, token string) (map[string]i
 	if expires.Valid && time.Now().After(expires.Time) {
 		return nil, ErrNotFound
 	}
-	return GetAuditReport(ctx, id)
+	return getAuditReportByID(ctx, id)
 }
 
 // RevokeShareToken soft-revokes a share token so /r/{token} returns 404.
-func RevokeShareToken(ctx context.Context, reportID string) error {
+// Only the report's owner tenant may revoke.
+func RevokeShareToken(ctx context.Context, reportID, tenantID string) error {
+	if tenantID == "" {
+		return ErrNotFound
+	}
 	if db == nil {
 		return errors.New("db not initialized")
 	}
-	_, err := db.ExecContext(ctx, `UPDATE audit_reports SET share_revoked=TRUE WHERE id=$1`, reportID)
-	return err
+	result, err := db.ExecContext(ctx, `UPDATE audit_reports SET share_revoked=TRUE WHERE id=$1 AND org_id=$2`, reportID, tenantID)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
-// ListAuditReports returns reports for an org, newest first.
+// ListAuditReports returns reports owned by the caller's tenant, newest first.
+// An empty orgID returns no reports (never all reports).
 func ListAuditReports(ctx context.Context, orgID string, limit, offset int) ([]map[string]interface{}, error) {
+	if orgID == "" {
+		return []map[string]interface{}{}, nil
+	}
 	if db == nil {
 		return nil, errors.New("db not initialized")
 	}
@@ -310,8 +457,8 @@ func ListAuditReports(ctx context.Context, orgID string, limit, offset int) ([]m
 	if offset < 0 {
 		offset = 0
 	}
-	q := `SELECT id, status, claim_count, share_token, share_expires_at, created_at
-		FROM audit_reports WHERE ($1 = '' OR org_id = $1)
+	q := `SELECT id, status, claim_count, created_at
+		FROM audit_reports WHERE org_id = $1
 		ORDER BY created_at DESC LIMIT $2 OFFSET $3`
 	rows, err := db.QueryContext(ctx, q, orgID, limit, offset)
 	if err != nil {
@@ -322,21 +469,16 @@ func ListAuditReports(ctx context.Context, orgID string, limit, offset int) ([]m
 	for rows.Next() {
 		var id, status string
 		var claimCount int
-		var shareToken sql.NullString
-		var shareExpires sql.NullTime
 		var created time.Time
-		if err := rows.Scan(&id, &status, &claimCount, &shareToken, &shareExpires, &created); err != nil {
+		if err := rows.Scan(&id, &status, &claimCount, &created); err != nil {
 			continue
 		}
-		item := map[string]interface{}{
-			"report_id": id, "status": status, "claim_count": claimCount,
+		out = append(out, map[string]interface{}{
+			"report_id":  id,
+			"status":     status,
+			"claim_count": claimCount,
 			"created_at": created,
-		}
-		if shareToken.Valid && shareToken.String != "" {
-			item["share_token"] = shareToken.String
-			item["share_url"] = "/r/" + shareToken.String
-		}
-		out = append(out, item)
+		})
 	}
 	return out, nil
 }
@@ -360,7 +502,8 @@ type AuditReport struct {
 }
 
 // CreateAuditReport inserts a new report and its claims. Returns report id and share token.
-func CreateAuditReport(ctx context.Context, orgID, tier string, claims []map[string]interface{}, summary map[string]interface{}) (string, string, error) {
+// status is one of "completed", "partial", "failed".
+func CreateAuditReport(ctx context.Context, orgID, tier, status string, claims []map[string]interface{}, summary map[string]interface{}) (string, string, error) {
 	if db == nil {
 		return "", "", errors.New("db not initialized")
 	}
@@ -375,8 +518,8 @@ func CreateAuditReport(ctx context.Context, orgID, tier string, claims []map[str
 	summaryJSON, _ := jsonMarshal(summary)
 	err = tx.QueryRowContext(ctx, `
 		INSERT INTO audit_reports (org_id, api_key_tier, status, claim_count, summary)
-		VALUES ($1, $2, 'completed', $3, $4::jsonb)
-		RETURNING id`, nullIfEmpty(orgID), nullIfEmpty(tier), len(claims), summaryJSON).Scan(&reportID)
+		VALUES ($1, $2, $5, $3, $4::jsonb)
+		RETURNING id`, nullIfEmpty(orgID), nullIfEmpty(tier), len(claims), summaryJSON, status).Scan(&reportID)
 	if err != nil {
 		return "", "", err
 	}
@@ -402,12 +545,31 @@ func CreateAuditReport(ctx context.Context, orgID, tier string, claims []map[str
 	return reportID, "", nil
 }
 
-// GetAuditReport fetches a report with its claims.
-func GetAuditReport(ctx context.Context, id string) (map[string]interface{}, error) {
+// getAuditReportByID fetches a report by id without tenant filtering. Used only
+// by the public share-token path (/r/{token}), where the token itself is the
+// authorization.
+func getAuditReportByID(ctx context.Context, id string) (map[string]interface{}, error) {
 	if db == nil {
 		return nil, errors.New("db not initialized")
 	}
 	row := db.QueryRowContext(ctx, `SELECT id, api_key_tier, status, claim_count, summary, share_token, share_expires_at, created_at FROM audit_reports WHERE id=$1`, id)
+	return scanAuditReport(ctx, row)
+}
+
+// GetAuditReport fetches a report owned by the given tenant. Returns ErrNotFound
+// when the report does not exist or is owned by another tenant (no enumeration).
+func GetAuditReport(ctx context.Context, id, tenantID string) (map[string]interface{}, error) {
+	if tenantID == "" {
+		return nil, ErrNotFound
+	}
+	if db == nil {
+		return nil, errors.New("db not initialized")
+	}
+	row := db.QueryRowContext(ctx, `SELECT id, api_key_tier, status, claim_count, summary, share_token, share_expires_at, created_at FROM audit_reports WHERE id=$1 AND org_id=$2`, id, tenantID)
+	return scanAuditReport(ctx, row)
+}
+
+func scanAuditReport(ctx context.Context, row *sql.Row) (map[string]interface{}, error) {
 	var r AuditReport
 	var tier sql.NullString
 	var summary sql.NullString
@@ -429,29 +591,38 @@ func GetAuditReport(ctx context.Context, id string) (map[string]interface{}, err
 
 	// fetch claims
 	var claims []map[string]interface{}
-	// simple: read manually
-	rows2, _ := db.QueryContext(ctx, `SELECT claim_index, claim, decision, confidence_zone, calibrated_confidence, failure_type, evidence::text, span_attribution::text, evaluation::text FROM audit_report_claims WHERE report_id=$1 ORDER BY claim_index`, id)
-	defer rows2.Close()
-	for rows2.Next() {
-		var ci int
-		var claim, decision, zone, ft string
-		var conf sql.NullFloat64
-		var ev, sa, evl sql.NullString
-		if err := rows2.Scan(&ci, &claim, &decision, &zone, &conf, &ft, &ev, &sa, &evl); err != nil {
-			continue
+	rows2, err := db.QueryContext(ctx, `SELECT claim_index, claim, decision, confidence_zone, calibrated_confidence, failure_type, evidence::text, span_attribution::text, evaluation::text FROM audit_report_claims WHERE report_id=$1 ORDER BY claim_index`, r.ID)
+	if err == nil && rows2 != nil {
+		defer rows2.Close()
+		for rows2.Next() {
+			var ci int
+			var claim, decision, zone, ft string
+			var conf sql.NullFloat64
+			var ev, sa, evl sql.NullString
+			if err := rows2.Scan(&ci, &claim, &decision, &zone, &conf, &ft, &ev, &sa, &evl); err != nil {
+				continue
+			}
+			claims = append(claims, map[string]interface{}{
+				"claim_index":            ci,
+				"claim":                  claim,
+				"decision":               decision,
+				"confidence_zone":        zone,
+				"calibrated_confidence":  conf.Float64,
+				"failure_type":           ft,
+				"evidence":               parseJSONField(ev.String),
+				"span_attribution":       parseJSONField(sa.String),
+				"evaluation":             parseJSONField(evl.String),
+			})
 		}
-		claims = append(claims, map[string]interface{}{
-			"claim_index": ci, "claim": claim, "decision": decision,
-			"confidence_zone": zone, "calibrated_confidence": conf.Float64,
-			"failure_type": ft, "evidence": parseJSONField(ev.String),
-			"span_attribution": parseJSONField(sa.String),
-			"evaluation": parseJSONField(evl.String),
-		})
 	}
 
 	return map[string]interface{}{
-		"report_id": r.ID, "status": r.Status, "claim_count": r.ClaimCount,
-		"summary": r.Summary, "share_token": r.ShareToken, "claims": claims,
+		"report_id":     r.ID,
+		"status":        r.Status,
+		"claim_count":   r.ClaimCount,
+		"summary":       r.Summary,
+		// share_token intentionally omitted: exposed only via /r/{token}.
+		"claims": claims,
 		"created_at": r.CreatedAt,
 	}, nil
 }

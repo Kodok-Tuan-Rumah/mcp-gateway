@@ -6,8 +6,14 @@ package middleware
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -35,39 +41,72 @@ var DefaultTier = TierFree
 // ──────────────────────────── API Key Store ────────────────────────────
 
 // APIKeyStore is a thread-safe store for valid API keys with per-key tiers.
+// Each key is bound to a stable tenant_id (UUID). The tenant_id — never the
+// raw API key — is what is persisted as org ownership in audit reports.
 type APIKeyStore struct {
-	mu    sync.RWMutex
-	keys  map[string]struct{}
-	tiers map[string]TierConfig // key → tier (empty = default tier)
-	orgs  map[string]string     // key → org_id (empty = key itself)
+	mu     sync.RWMutex
+	keys   map[string]struct{}
+	tiers  map[string]TierConfig // key → tier (empty = default tier)
+	orgs   map[string]string     // key → tenant_id (deterministic HMAC)
+	secret string                 // server secret for HMAC tenant ID derivation
+}
+
+// tenantIDFromKey derives a deterministic tenant_id from an API key using
+// HMAC-SHA256 with the server secret. The same key + secret always produces
+// the same tenant_id, surviving process restarts and key rotations.
+// The tenant_id — never the raw key — is what is stored as report ownership.
+func tenantIDFromKey(key, secret string) string {
+	if secret == "" {
+		// Fallback to random UUID if no secret configured (dev mode only).
+		b := make([]byte, 16)
+		if _, err := rand.Read(b); err != nil {
+			return hex.EncodeToString([]byte("tenant-fallback"))
+		}
+		b[6] = (b[6] & 0x0f) | 0x40
+		b[8] = (b[8] & 0x3f) | 0x80
+		return hex.EncodeToString(b)
+	}
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(key))
+	sum := mac.Sum(nil)
+	// Format as UUID v4-like string for readability.
+	b := sum[:16]
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return hex.EncodeToString(b)
 }
 
 // NewAPIKeyStore creates a new key store with the given keys (all default tier).
-func NewAPIKeyStore(keys []string) *APIKeyStore {
+// Each key is bound to a deterministic tenant_id derived from the server secret.
+func NewAPIKeyStoreWithSecret(keys []string, secret string) *APIKeyStore {
 	s := &APIKeyStore{
-		keys:  make(map[string]struct{}, len(keys)),
-		tiers: make(map[string]TierConfig),
-		orgs:  make(map[string]string),
+		keys:   make(map[string]struct{}, len(keys)),
+		tiers:  make(map[string]TierConfig),
+		orgs:   make(map[string]string),
+		secret: secret,
 	}
 	for _, k := range keys {
 		k = strings.TrimSpace(k)
-		if k != "" {
-			s.orgs[k] = k
+		if k == "" {
+			continue
 		}
-	}
-	for _, k := range keys {
-		k = strings.TrimSpace(k)
-		if k != "" {
-			s.keys[k] = struct{}{}
-		}
+		s.keys[k] = struct{}{}
+		s.orgs[k] = tenantIDFromKey(k, secret)
 	}
 	return s
 }
 
+// NewAPIKeyStore creates a new key store with the given keys (all default tier).
+// Uses an empty secret (random UUID fallback) for backward compatibility.
+func NewAPIKeyStore(keys []string) *APIKeyStore {
+	return NewAPIKeyStoreWithSecret(keys, "")
+}
+
 // NewAPIKeyStoreWithTiers creates a key store with explicit tier assignments.
 // tiers is a map of key → tier name (e.g., "free", "pro", "enterprise").
-func NewAPIKeyStoreWithTiers(keys []string, tierMap map[string]string) *APIKeyStore {
-	s := NewAPIKeyStore(keys)
+// secret is the server secret for deterministic tenant ID derivation.
+func NewAPIKeyStoreWithTiersAndSecret(keys []string, tierMap map[string]string, secret string) *APIKeyStore {
+	s := NewAPIKeyStoreWithSecret(keys, secret)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for key, tierName := range tierMap {
@@ -78,6 +117,13 @@ func NewAPIKeyStoreWithTiers(keys []string, tierMap map[string]string) *APIKeySt
 		s.tiers[key] = tierFromName(tierName)
 	}
 	return s
+}
+
+// NewAPIKeyStoreWithTiers creates a key store with explicit tier assignments.
+// tiers is a map of key → tier name (e.g., "free", "pro", "enterprise").
+// Uses an empty secret (random UUID fallback) for backward compatibility.
+func NewAPIKeyStoreWithTiers(keys []string, tierMap map[string]string) *APIKeyStore {
+	return NewAPIKeyStoreWithTiersAndSecret(keys, tierMap, "")
 }
 
 // tierFromName converts a tier name string to TierConfig.
@@ -110,14 +156,35 @@ func (s *APIKeyStore) Tier(key string) TierConfig {
 	return DefaultTier
 }
 
-// OrgID returns the org id for a given key (defaults to the key itself).
+// OrgID returns the tenant_id bound to a key. The tenant_id — never the raw
+// API key — is the stable identity used for multi-tenant scoping.
 func (s *APIKeyStore) OrgID(key string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if o, ok := s.orgs[key]; ok && o != "" {
 		return o
 	}
-	return key
+	return ""
+}
+
+// TenantID returns the tenant_id bound to a key (alias for OrgID).
+func (s *APIKeyStore) TenantID(key string) string {
+	return s.OrgID(key)
+}
+
+// SetTenant binds a key to an explicit tenant_id.
+func (s *APIKeyStore) SetTenant(key, tenantID string) {
+	key = strings.TrimSpace(key)
+	tenantID = strings.TrimSpace(tenantID)
+	if key == "" || tenantID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.keys[key]; !ok {
+		return
+	}
+	s.orgs[key] = tenantID
 }
 
 // SetTier sets the tier for a key.
@@ -127,7 +194,7 @@ func (s *APIKeyStore) SetTier(key, tierName string) {
 	s.tiers[key] = tierFromName(tierName)
 }
 
-// Add adds a new key to the store (default tier).
+// Add adds a new key to the store (default tier) bound to a deterministic tenant_id.
 func (s *APIKeyStore) Add(key string) {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -136,10 +203,26 @@ func (s *APIKeyStore) Add(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.keys[key] = struct{}{}
-	s.orgs[key] = key
+	s.orgs[key] = tenantIDFromKey(key, s.secret)
 }
 
-// AddWithTier adds a new key with a specific tier.
+// AddKeys adds multiple keys to the store atomically (default tier). Existing
+// keys are never removed by this operation. Each key is bound to its own
+// tenant_id.
+func (s *APIKeyStore) AddKeys(keys []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, k := range keys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		s.keys[k] = struct{}{}
+		s.orgs[k] = tenantIDFromKey(k, s.secret)
+	}
+}
+
+// AddWithTier adds a new key with a specific tier and its own tenant_id.
 func (s *APIKeyStore) AddWithTier(key, tierName string) {
 	key = strings.TrimSpace(key)
 	if key == "" {
@@ -149,7 +232,7 @@ func (s *APIKeyStore) AddWithTier(key, tierName string) {
 	defer s.mu.Unlock()
 	s.keys[key] = struct{}{}
 	s.tiers[key] = tierFromName(tierName)
-	s.orgs[key] = key
+	s.orgs[key] = tenantIDFromKey(key, s.secret)
 }
 
 // Remove removes a key from the store.
@@ -161,7 +244,8 @@ func (s *APIKeyStore) Remove(key string) {
 	delete(s.orgs, key)
 }
 
-// Replace replaces all keys with the new set (default tier).
+// Replace replaces all keys with the new set (default tier). Each key is bound
+// to a new tenant_id.
 func (s *APIKeyStore) Replace(keys []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -172,12 +256,13 @@ func (s *APIKeyStore) Replace(keys []string) {
 		k = strings.TrimSpace(k)
 		if k != "" {
 			s.keys[k] = struct{}{}
-			s.orgs[k] = k
+			s.orgs[k] = tenantIDFromKey(k, s.secret)
 		}
 	}
 }
 
-// ReplaceWithTiers replaces all keys with tier assignments.
+// ReplaceWithTiers replaces all keys with tier assignments. Each key is bound
+// to a new tenant_id.
 func (s *APIKeyStore) ReplaceWithTiers(keys []string, tierMap map[string]string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -188,7 +273,7 @@ func (s *APIKeyStore) ReplaceWithTiers(keys []string, tierMap map[string]string)
 		k = strings.TrimSpace(k)
 		if k != "" {
 			s.keys[k] = struct{}{}
-			s.orgs[k] = k
+			s.orgs[k] = tenantIDFromKey(k, s.secret)
 		}
 	}
 	for key, tierName := range tierMap {
@@ -292,7 +377,13 @@ func (h *authHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		enabled = true
 	}
 
-	if !enabled || h.exempt[r.URL.Path] {
+	// Share links are public: no API key required. Token validation (expiry,
+	// revoked, rate limit) is enforced downstream by the store and rate
+	// limiter. Exempting here prevents external recipients without an API key
+	// from getting 401 when auth is enabled.
+	isShareLink := strings.HasPrefix(r.URL.Path, "/r/")
+
+	if !enabled || h.exempt[r.URL.Path] || isShareLink {
 		ctx := context.WithValue(r.Context(), tierContextKey, DefaultTier.Name)
 		ctx = context.WithValue(ctx, orgContextKey, "")
 		h.next.ServeHTTP(w, r.WithContext(ctx))
@@ -379,19 +470,22 @@ func extractAPIKey(r *http.Request, headerName, headerPrefix string) string {
 
 // tokenBucket implements a simple token bucket rate limiter.
 type tokenBucket struct {
-	mu     sync.Mutex
-	tokens float64
-	rate   float64
-	burst  float64
-	last   time.Time
+	mu        sync.Mutex
+	tokens    float64
+	rate      float64
+	burst     float64
+	last      time.Time
+	lastAccess time.Time
 }
 
 func newTokenBucket(rpm, burst int64) *tokenBucket {
+	now := time.Now()
 	return &tokenBucket{
-		tokens: float64(burst),
-		rate:   float64(rpm) / 60.0,
-		burst:  float64(burst),
-		last:   time.Now(),
+		tokens:     float64(burst),
+		rate:       float64(rpm) / 60.0,
+		burst:      float64(burst),
+		last:       now,
+		lastAccess: now,
 	}
 }
 
@@ -417,23 +511,97 @@ func (b *tokenBucket) allow() bool {
 }
 
 // PerKeyRateLimiter holds one token bucket per client key, with per-key tiers.
+// Buckets are evicted after a TTL to prevent unbounded memory growth, and a
+// maximum bucket count caps total memory usage.
 type PerKeyRateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*tokenBucket
-	store    *APIKeyStore
-	defaults TierConfig
-	// tierOverrides maps key → tier override
-	tierOverrides map[string]TierConfig
+	mu          sync.Mutex
+	buckets     map[string]*tokenBucket
+	bucketAccess map[string]time.Time
+	store       *APIKeyStore
+	defaults    TierConfig
+	trustedProxies []*net.IPNet // if non-empty, X-Forwarded-For is only honored from these proxies
+	maxBuckets  int          // hard cap on number of buckets (LRU eviction when exceeded)
+	ttl         time.Duration // buckets idle longer than this are evicted
+	lastCleanup time.Time
+	tierOverrides map[string]TierConfig // tier override per key
 }
 
 // NewPerKeyRateLimiter creates a rate limiter with per-key tier support.
-func NewPerKeyRateLimiter(store *APIKeyStore, defaultTier TierConfig) *PerKeyRateLimiter {
+// ttl is the idle duration after which a bucket is evicted; maxBuckets caps
+// total buckets to prevent memory exhaustion.
+func NewPerKeyRateLimiter(store *APIKeyStore, defaultTier TierConfig, ttl time.Duration, maxBuckets int) *PerKeyRateLimiter {
+	now := time.Now()
 	return &PerKeyRateLimiter{
-		buckets:       make(map[string]*tokenBucket),
-		store:         store,
-		defaults:      defaultTier,
-		tierOverrides: make(map[string]TierConfig),
+		buckets:        make(map[string]*tokenBucket),
+		bucketAccess:   make(map[string]time.Time),
+		store:          store,
+		defaults:       defaultTier,
+		trustedProxies: nil,
+		maxBuckets:     maxBuckets,
+		ttl:            ttl,
+		lastCleanup:    now,
+		tierOverrides:  make(map[string]TierConfig),
 	}
+}
+
+// SetTrustedProxies configures CIDR ranges from which X-Forwarded-For is
+// trusted. Requests from other IPs fall back to RemoteAddr for rate limiting.
+func (rl *PerKeyRateLimiter) SetTrustedProxies(proxies []*net.IPNet) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.trustedProxies = proxies
+}
+
+// isTrustedProxy reports whether the given IP is in a trusted proxy CIDR.
+func (rl *PerKeyRateLimiter) isTrustedProxy(ip string) bool {
+	if len(rl.trustedProxies) == 0 {
+		return false
+	}
+	parsedIP := net.ParseIP(ip)
+	if parsedIP == nil {
+		return false
+	}
+	for _, ipNet := range rl.trustedProxies {
+		if ipNet.Contains(parsedIP) {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanupBuckets evicts idle buckets beyond TTL, and evicts LRU buckets if
+// over maxBuckets. Must be called with rl.mu held.
+func (rl *PerKeyRateLimiter) cleanupBuckets(now time.Time) {
+	// Evict by TTL
+	for key, b := range rl.buckets {
+		b.mu.Lock()
+		idle := now.Sub(b.lastAccess)
+		b.mu.Unlock()
+		if idle > rl.ttl {
+			delete(rl.buckets, key)
+			delete(rl.bucketAccess, key)
+		}
+	}
+	// Evict by count (LRU first)
+	if len(rl.buckets) > rl.maxBuckets {
+		type kv struct {
+			key string
+			t   time.Time
+		}
+		var ordered []kv
+		for key, t := range rl.bucketAccess {
+			ordered = append(ordered, kv{key, t})
+		}
+		sort.Slice(ordered, func(i, j int) bool {
+			return ordered[i].t.Before(ordered[j].t)
+		})
+		toRemove := len(rl.buckets) - rl.maxBuckets
+		for i := 0; i < toRemove && i < len(ordered); i++ {
+			delete(rl.buckets, ordered[i].key)
+			delete(rl.bucketAccess, ordered[i].key)
+		}
+	}
+	rl.lastCleanup = now
 }
 
 // SetTier sets a custom tier for a specific key.
@@ -469,18 +637,40 @@ func (rl *PerKeyRateLimiter) getBucket(key string) *tokenBucket {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 
+	now := time.Now()
+	// Periodic cleanup to prevent unbounded memory growth
+	if now.Sub(rl.lastCleanup) > 30*time.Second {
+		rl.cleanupBuckets(now)
+	}
+
 	b, ok := rl.buckets[key]
 	if !ok {
+		if len(rl.buckets) >= rl.maxBuckets {
+			// Hard cap: fall back to default tier bucket shared by overflow
+			key = "__overflow__"
+			b, ok = rl.buckets[key]
+			if !ok {
+				tier := rl.defaults
+				b = newTokenBucket(tier.RequestsPerMinute, tier.Burst)
+				rl.buckets[key] = b
+				rl.bucketAccess[key] = now
+			}
+			return b
+		}
 		tier := rl.TierForLocked(key)
 		b = newTokenBucket(tier.RequestsPerMinute, tier.Burst)
 		rl.buckets[key] = b
 	}
+	rl.bucketAccess[key] = now
 	return b
 }
 
 // PerKeyRateLimit returns a chi middleware function for per-key rate limiting.
-func PerKeyRateLimit(store *APIKeyStore, defaultTier TierConfig) func(http.Handler) http.Handler {
-	limiter := NewPerKeyRateLimiter(store, defaultTier)
+// headerName/headerPrefix are taken from auth config so the rate limiter
+// identifies clients by the same API key header used for authentication.
+func PerKeyRateLimit(store *APIKeyStore, defaultTier TierConfig, headerName, headerPrefix string, trustedProxies []*net.IPNet, ttl time.Duration, maxBuckets int) func(http.Handler) http.Handler {
+	limiter := NewPerKeyRateLimiter(store, defaultTier, ttl, maxBuckets)
+	limiter.SetTrustedProxies(trustedProxies)
 	exempt := map[string]bool{
 		"/health":  true,
 		"/ready":   true,
@@ -493,15 +683,19 @@ func PerKeyRateLimit(store *APIKeyStore, defaultTier TierConfig) func(http.Handl
 			limiter:  limiter,
 			enabled:  true,
 			exempt:   exempt,
+			headerName:   headerName,
+			headerPrefix: headerPrefix,
 		}
 	}
 }
 
 type perKeyRateLimitHandler struct {
-	next    http.Handler
-	limiter *PerKeyRateLimiter
-	enabled bool
-	exempt  map[string]bool
+	next         http.Handler
+	limiter      *PerKeyRateLimiter
+	enabled      bool
+	exempt       map[string]bool
+	headerName   string
+	headerPrefix string
 }
 
 func (h *perKeyRateLimitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -510,9 +704,9 @@ func (h *perKeyRateLimitHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	key := clientKey(r)
+	key := clientKey(r, h.limiter.trustedProxies)
 	// For authenticated requests, use the API key as the rate limit key
-	if apiKey := extractAPIKey(r, "Authorization", "Bearer"); apiKey != "" {
+	if apiKey := extractAPIKey(r, h.headerName, h.headerPrefix); apiKey != "" {
 		key = apiKey
 	}
 
@@ -566,7 +760,7 @@ func (h *rateLimitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	key := clientKey(r)
+	key := clientKey(r, nil)
 	if !h.limiter.getBucket(key).allow() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Retry-After", "1")
@@ -581,20 +775,61 @@ func (h *rateLimitHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.next.ServeHTTP(w, r)
 }
 // clientKey extracts the client key from the request.
-func clientKey(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.Index(xff, ","); idx >= 0 {
-			return strings.TrimSpace(xff[:idx])
-		}
-		return strings.TrimSpace(xff)
-	}
+// X-Forwarded-For is only honored if the request comes from a trusted proxy;
+// otherwise RemoteAddr is used to prevent IP spoofing.
+func clientKey(r *http.Request, trustedProxies []*net.IPNet) string {
+	remoteIP := ""
 	if r.RemoteAddr != "" {
 		if idx := strings.LastIndex(r.RemoteAddr, ":"); idx >= 0 {
-			return r.RemoteAddr[:idx]
+			remoteIP = r.RemoteAddr[:idx]
+		} else {
+			remoteIP = r.RemoteAddr
 		}
-		return r.RemoteAddr
+	}
+
+	isTrusted := false
+	if remoteIP != "" {
+		parsedIP := net.ParseIP(remoteIP)
+		if parsedIP != nil {
+			for _, ipNet := range trustedProxies {
+				if ipNet.Contains(parsedIP) {
+					isTrusted = true
+					break
+				}
+			}
+		}
+	}
+
+	if isTrusted {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			if idx := strings.Index(xff, ","); idx >= 0 {
+				return strings.TrimSpace(xff[:idx])
+			}
+			return strings.TrimSpace(xff)
+		}
+	}
+	if remoteIP != "" {
+		return remoteIP
 	}
 	return "unknown"
+}
+
+// ParseTrustedProxies parses a comma-separated list of CIDR strings into
+// []*net.IPNet. Invalid entries are silently skipped.
+func ParseTrustedProxies(cidrList string) []*net.IPNet {
+	var proxies []*net.IPNet
+	for _, c := range strings.Split(cidrList, ",") {
+		c = strings.TrimSpace(c)
+		if c == "" {
+			continue
+		}
+		_, ipNet, err := net.ParseCIDR(c)
+		if err != nil {
+			continue
+		}
+		proxies = append(proxies, ipNet)
+	}
+	return proxies
 }
 
 // newRateLimiter creates a rate limiter (kept for backward compat).

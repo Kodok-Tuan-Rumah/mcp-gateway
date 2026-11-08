@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -17,6 +18,26 @@ import (
 	"github.com/malikimayzar/mcp-gateway/internal/middleware"
 	"github.com/malikimayzar/mcp-gateway/internal/store"
 )
+
+var (
+	// tenantClaimQuota limits the number of claims per tenant per report request.
+	tenantClaimQuota = map[string]int{
+		"free":       10,
+		"pro":        50,
+		"enterprise": 200,
+	}
+	tenantQuotaMu sync.RWMutex
+)
+
+// tenantClaimLimit returns the max claims allowed for a tenant tier.
+func tenantClaimLimit(tier string) int {
+	tenantQuotaMu.RLock()
+	defer tenantQuotaMu.RUnlock()
+	if v, ok := tenantClaimQuota[tier]; ok {
+		return v
+	}
+	return tenantClaimQuota["free"]
+}
 
 func handleCreateReport(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -44,18 +65,45 @@ func handleCreateReport(w http.ResponseWriter, r *http.Request) {
 	if tier == "" {
 		tier = "free"
 	}
-	reportID, token, _, err := audit.BuildReport(r.Context(), req.Claims, tier)
+
+	// Per-tenant claim quota enforcement.
+	tenantID := middleware.OrgIDFromContext(r.Context())
+	if tenantID == "" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "tenant context required"})
+		return
+	}
+	claimLimit := tenantClaimLimit(tier)
+	if len(req.Claims) > claimLimit {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":   fmt.Sprintf("claim quota exceeded: %d claims exceed tier limit of %d for tier %q", len(req.Claims), claimLimit, tier),
+			"tier":    tier,
+			"limit":   claimLimit,
+		})
+		return
+	}
+
+	reportID, token, dossier, err := audit.BuildReport(r.Context(), req.Claims, tier)
 	if err != nil {
 		log.Printf("[reports] create failed: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]interface{}{
+	if reportID == "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "report persistence failed"})
+		return
+	}
+	// BuildReport already sets status (completed/partial/failed) and only
+	// issues a share token when the report contains usable evidence.
+	status, _ := dossier["status"].(string)
+	response := map[string]interface{}{
 		"report_id":   reportID,
-		"status":      "completed",
+		"status":      status,
 		"share_token": token,
-		"share_url":   "/r/" + token,
-	})
+	}
+	if token != "" {
+		response["share_url"] = "/r/" + token
+	}
+	writeJSON(w, http.StatusCreated, response)
 }
 
 // reportIDPattern matches canonical UUID form; prevents raw Postgres casts
@@ -69,7 +117,8 @@ func handleGetReport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid report id"})
 		return
 	}
-	rep, err := store.GetAuditReport(r.Context(), id)
+	tenantID := middleware.OrgIDFromContext(r.Context())
+	rep, err := store.GetAuditReport(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -88,7 +137,8 @@ func handleExportReport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid report id"})
 		return
 	}
-	rep, err := store.GetAuditReport(r.Context(), id)
+	tenantID := middleware.OrgIDFromContext(r.Context())
+	rep, err := store.GetAuditReport(r.Context(), id, tenantID)
 	if err != nil {
 		if err == store.ErrNotFound {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -179,6 +229,10 @@ func buildReportMarkdown(rep map[string]interface{}) string {
 // handleListReports returns reports for the caller's org (newest first).
 func handleListReports(w http.ResponseWriter, r *http.Request) {
 	orgID := middleware.OrgIDFromContext(r.Context())
+	if orgID == "" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "tenant context required"})
+		return
+	}
 	limit := 20
 	offset := 0
 	if v := r.URL.Query().Get("limit"); v != "" {
@@ -311,7 +365,12 @@ func handleRevokeReport(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid report id"})
 		return
 	}
-	if err := store.RevokeShareToken(r.Context(), id); err != nil {
+	tenantID := middleware.OrgIDFromContext(r.Context())
+	if err := store.RevokeShareToken(r.Context(), id, tenantID); err != nil {
+		if err == store.ErrNotFound {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+			return
+		}
 		log.Printf("[reports] revoke failed: %v", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return

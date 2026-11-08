@@ -32,6 +32,34 @@ func TestNullIfEmpty(t *testing.T) {
 	}
 }
 
+// ListAuditReports dengan org_id kosong tidak boleh mengembalikan semua report
+// (tidak ada $1='' bypass). Harus mengembalikan hasil kosong tanpa menyentuh DB.
+func TestListAuditReports_EmptyOrgReturnsNone(t *testing.T) {
+	items, err := ListAuditReports(context.Background(), "", 20, 0)
+	if err != nil {
+		t.Fatalf("org_id kosong harus tidak error, dapat: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("org_id kosong harus menghasilkan 0 report, dapat %d", len(items))
+	}
+}
+
+// GetAuditReport dengan tenant_id kosong harus ErrNotFound tanpa menyentuh DB.
+func TestGetAuditReport_EmptyTenantIsNotFound(t *testing.T) {
+	_, err := GetAuditReport(context.Background(), "00000000-0000-0000-0000-000000000000", "")
+	if err != ErrNotFound {
+		t.Errorf("expected ErrNotFound for empty tenant, got %v", err)
+	}
+}
+
+// RevokeShareToken dengan tenant_id kosong harus error, bukan menyentuh DB.
+func TestRevokeShareToken_EmptyTenantErrors(t *testing.T) {
+	err := RevokeShareToken(context.Background(), "00000000-0000-0000-0000-000000000000", "")
+	if err == nil {
+		t.Error("expected error for empty tenant, got nil")
+	}
+}
+
 func TestLogTable_IsGatewayOwned(t *testing.T) {
 	if LogTable != "gateway_query_logs" {
 		t.Errorf("LogTable = %q, harus gateway_query_logs", LogTable)

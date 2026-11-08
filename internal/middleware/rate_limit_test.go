@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,20 +92,34 @@ func TestRateLimitExemptPaths(t *testing.T) {
 }
 
 func TestRateLimitClientKey(t *testing.T) {
-	// Test X-Forwarded-For
+	// Trusted proxy: 127.0.0.0/8
+	_, trustedNet, _ := net.ParseCIDR("127.0.0.0/8")
+	trustedProxies := []*net.IPNet{trustedNet}
+
+	// Test X-Forwarded-For (only honored from trusted proxy)
 	req := httptest.NewRequest("GET", "/", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("X-Forwarded-For", "10.0.0.5, 20.0.0.6")
-	key := clientKey(req)
+	key := clientKey(req, trustedProxies)
 	if key != "10.0.0.5" {
 		t.Errorf("expected 10.0.0.5, got %s", key)
 	}
 
-	// Test RemoteAddr fallback
+	// Test X-Forwarded-For ignored when not from trusted proxy
 	req2 := httptest.NewRequest("GET", "/", nil)
-	req2.RemoteAddr = "192.168.1.1:8080"
-	key2 := clientKey(req2)
-	if key2 != "192.168.1.1" {
-		t.Errorf("expected 192.168.1.1, got %s", key2)
+	req2.RemoteAddr = "10.0.0.5:12345"
+	req2.Header.Set("X-Forwarded-For", "99.99.99.99")
+	key2 := clientKey(req2, trustedProxies)
+	if key2 != "10.0.0.5" {
+		t.Errorf("expected 10.0.0.5 (untrusted XFF ignored), got %s", key2)
+	}
+
+	// Test RemoteAddr fallback
+	req3 := httptest.NewRequest("GET", "/", nil)
+	req3.RemoteAddr = "192.168.1.1:8080"
+	key3 := clientKey(req3, nil)
+	if key3 != "192.168.1.1" {
+		t.Errorf("expected 192.168.1.1, got %s", key3)
 	}
 }
 
@@ -178,6 +193,44 @@ func TestAuthMiddlewareExemptPaths(t *testing.T) {
 	}
 }
 
+func TestAuthMiddlewareShareLinkExempt(t *testing.T) {
+	// Share links must be accessible without an API key even when auth is
+	// enabled; token validation is enforced downstream by the store.
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	mw := Auth([]string{"test-key"}, "Authorization", "Bearer")
+	handler := mw(next)
+
+	// Share link without any API key -> 200 (exempt from auth)
+	req := httptest.NewRequest("GET", "/r/abc123def456", nil)
+	req.RemoteAddr = "10.0.0.1:12345"
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("share link without API key: expected 200, got %d", rr.Code)
+	}
+
+	// Regular path without API key -> 401 (auth still enforced)
+	req2 := httptest.NewRequest("GET", "/ask", nil)
+	req2.RemoteAddr = "10.0.0.1:12345"
+	rr2 := httptest.NewRecorder()
+	handler.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusUnauthorized {
+		t.Errorf("regular path without API key: expected 401, got %d", rr2.Code)
+	}
+
+	// Share link with valid API key -> 200
+	req3 := httptest.NewRequest("GET", "/r/abc123def456", nil)
+	req3.Header.Set("Authorization", "Bearer test-key")
+	rr3 := httptest.NewRecorder()
+	handler.ServeHTTP(rr3, req3)
+	if rr3.Code != http.StatusOK {
+		t.Errorf("share link with valid API key: expected 200, got %d", rr3.Code)
+	}
+}
+
 func TestExtractAPIKey(t *testing.T) {
 	// Authorization: Bearer <key>
 	req := httptest.NewRequest("POST", "/", nil)
@@ -236,6 +289,99 @@ func TestRateLimitConcurrent(t *testing.T) {
 	// All should pass with high rate limit
 	if successCount != 100 {
 		t.Errorf("expected 100 successes, got %d", successCount)
+	}
+}
+
+func TestAPIKeyStore_OrgIDIsTenantIDNotRawKey(t *testing.T) {
+	store := NewAPIKeyStore([]string{"sk-live-secret-key"})
+	tenantID := store.OrgID("sk-live-secret-key")
+
+	// Tenant ID must not be the raw API key.
+	if tenantID == "sk-live-secret-key" {
+		t.Error("OrgID must not return the raw API key")
+	}
+	// Tenant ID must be a non-empty UUID-like value.
+	if tenantID == "" {
+		t.Error("OrgID must return a non-empty tenant_id")
+	}
+	// TenantID alias returns the same.
+	if store.TenantID("sk-live-secret-key") != tenantID {
+		t.Error("TenantID must match OrgID")
+	}
+}
+
+func TestAPIKeyStore_EachKeyGetsUniqueTenantID(t *testing.T) {
+	store := NewAPIKeyStore([]string{"key-a", "key-b"})
+	a := store.OrgID("key-a")
+	b := store.OrgID("key-b")
+	if a == b {
+		t.Error("each key must be bound to a distinct tenant_id")
+	}
+	if a == "" || b == "" {
+		t.Error("tenant_id must not be empty")
+	}
+}
+
+func TestAPIKeyStore_UnknownKeyHasNoTenant(t *testing.T) {
+	store := NewAPIKeyStore([]string{"key-a"})
+	if store.OrgID("unknown-key") != "" {
+		t.Error("unknown key must have empty tenant_id")
+	}
+}
+
+func TestAPIKeyStore_SetTenant(t *testing.T) {
+	store := NewAPIKeyStore([]string{"key-a"})
+	store.SetTenant("key-a", "fixed-tenant-uuid")
+	if store.OrgID("key-a") != "fixed-tenant-uuid" {
+		t.Error("SetTenant must bind key to explicit tenant_id")
+	}
+	// Setting tenant on unknown key is a no-op.
+	store.SetTenant("unknown", "x")
+	if store.IsValid("unknown") {
+		t.Error("unknown key must not become valid via SetTenant")
+	}
+	// Original tenant for other keys unaffected.
+	store2 := NewAPIKeyStore([]string{"key-a", "key-b"})
+	store2.SetTenant("key-a", "fixed-tenant-uuid")
+	if store2.OrgID("key-b") == "fixed-tenant-uuid" {
+		t.Error("SetTenant on one key must not affect another key's tenant")
+	}
+}
+
+func TestAPIKeyStore_AddAndRemovePreserveTenantIsolation(t *testing.T) {
+	store := NewAPIKeyStore([]string{"key-a"})
+	store.Add("key-b")
+	a := store.OrgID("key-a")
+	b := store.OrgID("key-b")
+	if a == b {
+		t.Error("added key must get its own tenant_id distinct from existing keys")
+	}
+	store.Remove("key-a")
+	if store.IsValid("key-a") {
+		t.Error("removed key must no longer be valid")
+	}
+	if store.OrgID("key-a") != "" {
+		t.Error("removed key must have empty tenant_id")
+	}
+	if !store.IsValid("key-b") {
+		t.Error("other keys must remain valid after removal")
+	}
+}
+
+func TestAPIKeyStore_ReplaceRotatesKeysWithoutLeakingTenants(t *testing.T) {
+	store := NewAPIKeyStore([]string{"key-old"})
+	store.Replace([]string{"key-new"})
+	if store.IsValid("key-old") {
+		t.Error("old key must be removed by Replace")
+	}
+	if !store.IsValid("key-new") {
+		t.Error("new key must be valid after Replace")
+	}
+	if store.Count() != 1 {
+		t.Errorf("expected 1 key after Replace, got %d", store.Count())
+	}
+	if store.OrgID("key-new") == "" {
+		t.Error("replaced key must have a tenant_id")
 	}
 }
 

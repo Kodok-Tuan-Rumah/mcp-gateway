@@ -78,6 +78,9 @@ func evaluateAnswer(ctx context.Context, req registry.ToolRequest, service confi
 	if req.TraceID != "" {
 		httpReq.Header.Set("X-Request-ID", req.TraceID)
 	}
+	if service.InternalServiceToken != "" {
+		httpReq.Header.Set("X-Internal-Service-Token", service.InternalServiceToken)
+	}
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {

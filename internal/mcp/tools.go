@@ -3,9 +3,12 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"strings"
 
 	"github.com/malikimayzar/mcp-gateway/internal/audit"
 	"github.com/malikimayzar/mcp-gateway/internal/config"
+	"github.com/malikimayzar/mcp-gateway/internal/middleware"
 	"github.com/malikimayzar/mcp-gateway/internal/registry"
 	"github.com/malikimayzar/mcp-gateway/internal/tools"
 )
@@ -121,20 +124,36 @@ func RegisterGatewayTools(server *Server, cfg config.Config) {
 			if len(claims) == 0 {
 				return nil, fmt.Errorf("claims required")
 			}
+			if middleware.OrgIDFromContext(ctx) == "" {
+				return nil, fmt.Errorf("tenant context required")
+			}
 			reportID, _, dossier, err := audit.BuildReport(ctx, claims, "")
 			if err != nil {
 				return nil, fmt.Errorf("audit report failed: %w", err)
+			}
+			if reportID == "" {
+				return nil, fmt.Errorf("audit report was not persisted")
 			}
 			if dossier == nil {
 				dossier = map[string]interface{}{}
 			}
 			dossier["report_id"] = reportID
-			dossier["report_url"] = "/reports/" + reportID
-			dossier["status"] = "completed"
+			dossier["report_url"] = buildReportURL(cfg.PublicBaseURL, reportID)
+			if _, ok := dossier["status"]; !ok {
+				dossier["status"] = "completed"
+			}
 			dossier["claim_count"] = len(claims)
 			return dossier, nil
 		},
 	})
+}
+
+func buildReportURL(baseURL, reportID string) string {
+	path := "/reports/" + url.PathEscape(reportID)
+	if baseURL == "" {
+		return path
+	}
+	return strings.TrimRight(baseURL, "/") + path
 }
 
 // registryToolRequest converts MCP params to registry.ToolRequest

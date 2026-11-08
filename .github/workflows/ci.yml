@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 env:
-  GO_VERSION: "1.22"
+  GO_VERSION: "1.22.12"
   GOLANGCI_LINT_VERSION: "v1.57.2"
 
 jobs:
@@ -44,7 +44,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.4-alpine@sha256:5660c2cbfea50c7a9127d17dc4e48543eedd3d7a41a595a2dfa572471e37e64c
         env:
           POSTGRES_USER: mcp
           POSTGRES_PASSWORD: mcp_secret

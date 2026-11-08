@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -15,9 +16,10 @@ import (
 
 const (
 	DefaultListenAddress            = ":8090"
+	DefaultAdminListenAddress       = "127.0.0.1:8091"
 	DefaultRequestTimeout           = 620 * time.Second
 	DefaultStoreLogTimeout          = 5 * time.Second
-	DefaultPostgresDSN              = "host=localhost port=5432 user=arxiv password=arxiv_secret dbname=arxiv_db sslmode=disable"
+	DefaultPostgresDSN              = "host=localhost port=5432 user=arxiv dbname=arxiv_db sslmode=disable"
 	DefaultArxivServiceURL          = "http://localhost:8080"
 	DefaultArxivTimeout             = 600 * time.Second
 	DefaultArxivMaxResponseBytes    = 4 << 20
@@ -43,25 +45,40 @@ const (
 // ServiceConfig is the runtime configuration shared by a downstream HTTP
 // service. MaxResponseBytes is enforced by its adapter.
 type ServiceConfig struct {
-	BaseURL          string
-	Timeout          time.Duration
-	MaxResponseBytes int64
+	BaseURL           string
+	Timeout           time.Duration
+	MaxResponseBytes  int64
+	InternalServiceToken string
 }
 
 // Config contains the complete runtime configuration used by the gateway.
 type Config struct {
-	ListenAddress   string
-	RequestTimeout  time.Duration
-	StoreLogTimeout time.Duration
-	PostgresDSN     string
-	PostgresPool    PostgresPoolConfig
-	Arxiv           ServiceConfig
-	Evaluator       ServiceConfig
-	RAG             ServiceConfig
+	// ListenAddress is the public HTTP address the gateway binds to.
+	ListenAddress string
+	// AdminListenAddress is the admin-only HTTP address (bound to 127.0.0.1
+	// by default). /admin/* routes live here, isolated from public traffic.
+	AdminListenAddress string
+	RequestTimeout     time.Duration
+	StoreLogTimeout    time.Duration
+	PostgresDSN        string
+	PostgresPool       PostgresPoolConfig
+	Arxiv              ServiceConfig
+	Evaluator          ServiceConfig
+	RAG                ServiceConfig
 	// RateLimit is the rate limiting configuration for public endpoints.
 	RateLimit RateLimitConfig
 	// Auth is the API key authentication configuration.
 	Auth AuthConfig
+	// InternalServiceToken is the shared secret the gateway sends to downstream
+	// services (arxiv, rag, evaluator) on inter-service calls. Downstream
+	// services validate it before acting on requests.
+	InternalServiceToken string
+	// GatewayTrustedProxies is a comma-separated list of CIDR ranges from
+	// which X-Forwarded-For is trusted for rate limiting. Requests from
+	// untrusted sources fall back to RemoteAddr.
+	GatewayTrustedProxies string
+	// PublicBaseURL is the trusted external base URL used in MCP report links.
+	PublicBaseURL string
 }
 
 // PostgresPoolConfig controls connection pooling for PostgreSQL.
@@ -94,6 +111,9 @@ type AuthConfig struct {
 	HeaderPrefix string
 	// AdminKey is the key required to authorize key rotation. Empty = no admin protection.
 	AdminKey string
+	// RequireAuth, when true, fails startup if GATEWAY_API_KEYS or
+	// GATEWAY_ADMIN_KEY is empty. Enforces auth in production (Mode A).
+	RequireAuth bool
 }
 
 // Default returns the documented local-development values without reading the
@@ -102,6 +122,7 @@ type AuthConfig struct {
 func Default() Config {
 	return Config{
 		ListenAddress:   DefaultListenAddress,
+		AdminListenAddress: DefaultAdminListenAddress,
 		RequestTimeout:  DefaultRequestTimeout,
 		StoreLogTimeout: DefaultStoreLogTimeout,
 		PostgresDSN:     DefaultPostgresDSN,
@@ -120,7 +141,9 @@ func Default() Config {
 			HeaderPrefix:  "Bearer",
 			AdminKey:      "",
 			KeyTiers:      nil,
+			RequireAuth:   false,
 		},
+		InternalServiceToken: "",
 		Arxiv: ServiceConfig{
 			BaseURL:          DefaultArxivServiceURL,
 			Timeout:          DefaultArxivTimeout,
@@ -152,7 +175,12 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	cfg := Default()
 
 	cfg.ListenAddress = stringValue(lookup, "GATEWAY_LISTEN_ADDRESS", cfg.ListenAddress)
+	cfg.AdminListenAddress = stringValue(lookup, "GATEWAY_ADMIN_LISTEN_ADDRESS", cfg.AdminListenAddress)
 	cfg.PostgresDSN = stringValue(lookup, "POSTGRES_DSN", cfg.PostgresDSN)
+	cfg.InternalServiceToken = stringValue(lookup, "INTERNAL_SERVICE_TOKEN", cfg.InternalServiceToken)
+	cfg.Arxiv.InternalServiceToken = cfg.InternalServiceToken
+	cfg.Evaluator.InternalServiceToken = cfg.InternalServiceToken
+	cfg.RAG.InternalServiceToken = cfg.InternalServiceToken
 	cfg.Arxiv.BaseURL = stringValue(lookup, "ARXIV_SERVICE_URL", cfg.Arxiv.BaseURL)
 	cfg.Evaluator.BaseURL = stringValue(lookup, "EVAL_SERVICE_URL", cfg.Evaluator.BaseURL)
 	cfg.RAG.BaseURL = stringValue(lookup, "RAG_SERVICE_URL", cfg.RAG.BaseURL)
@@ -204,6 +232,11 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 	cfg.Auth.HeaderName = stringValue(lookup, "GATEWAY_AUTH_HEADER_NAME", cfg.Auth.HeaderName)
 	cfg.Auth.HeaderPrefix = stringValue(lookup, "GATEWAY_AUTH_HEADER_PREFIX", cfg.Auth.HeaderPrefix)
 	cfg.Auth.AdminKey = stringValue(lookup, "GATEWAY_ADMIN_KEY", cfg.Auth.AdminKey)
+	if v, err := boolValue(lookup, "GATEWAY_REQUIRE_AUTH", cfg.Auth.RequireAuth); err != nil {
+		return Config{}, err
+	} else {
+		cfg.Auth.RequireAuth = v
+	}
 
 	// Key tiers: "key1:pro,key2:enterprise"
 	tiersStr := stringValue(lookup, "GATEWAY_KEY_TIERS", "")
@@ -216,6 +249,10 @@ func LoadFromLookup(lookup func(string) (string, bool)) (Config, error) {
 			}
 		}
 	}
+
+	// Trusted proxies for X-Forwarded-For: comma-separated CIDR list
+	cfg.GatewayTrustedProxies = stringValue(lookup, "GATEWAY_TRUSTED_PROXIES", cfg.GatewayTrustedProxies)
+	cfg.PublicBaseURL = stringValue(lookup, "GATEWAY_PUBLIC_BASE_URL", cfg.PublicBaseURL)
 
 	// Postgres pool configuration
 	if cfg.PostgresPool.MaxOpenConns, err = positiveIntValue(lookup, "POSTGRES_POOL_MAX_OPEN", cfg.PostgresPool.MaxOpenConns); err != nil {
@@ -263,6 +300,22 @@ func (c Config) Validate() error {
 	if err := validatePostgresPoolConfig(c.PostgresPool); err != nil {
 		return err
 	}
+	if err := validatePublicBaseURL(c.PublicBaseURL); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validatePublicBaseURL(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" ||
+		parsed.RawFragment != "" || strings.Contains(raw, "#") {
+		return fmt.Errorf("GATEWAY_PUBLIC_BASE_URL must be an absolute http(s) URL without userinfo, query, or fragment")
+	}
 	return nil
 }
 
@@ -300,6 +353,14 @@ func validateAuthConfig(a AuthConfig) error {
 	if a.HeaderPrefix == "" {
 		return fmt.Errorf("GATEWAY_AUTH_HEADER_PREFIX cannot be empty")
 	}
+	if a.RequireAuth {
+		if len(a.APIKeys) == 0 {
+			return fmt.Errorf("GATEWAY_REQUIRE_AUTH=true requires GATEWAY_API_KEYS to be set")
+		}
+		if strings.TrimSpace(a.AdminKey) == "" {
+			return fmt.Errorf("GATEWAY_REQUIRE_AUTH=true requires GATEWAY_ADMIN_KEY to be set")
+		}
+	}
 	return nil
 }
 
@@ -325,6 +386,18 @@ func stringValue(lookup func(string) (string, bool), key, fallback string) strin
 		return fallback
 	}
 	return strings.TrimSpace(value)
+}
+
+func boolValue(lookup func(string) (string, bool), key string, fallback bool) (bool, error) {
+	raw, ok := lookup(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean (true/false), got %q", key, raw)
+	}
+	return v, nil
 }
 
 func durationValue(lookup func(string) (string, bool), key string, fallback time.Duration) (time.Duration, error) {

@@ -101,6 +101,9 @@ func researchRAG(ctx context.Context, req registry.ToolRequest, service config.S
 		httpReq.Header.Set("X-Request-ID", req.TraceID)
 		httpReq.Header.Set("X-Trace-ID", req.TraceID)
 	}
+	if service.InternalServiceToken != "" {
+		httpReq.Header.Set("X-Internal-Service-Token", service.InternalServiceToken)
+	}
 	// Propagate OpenTelemetry trace context
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(httpReq.Header))
 

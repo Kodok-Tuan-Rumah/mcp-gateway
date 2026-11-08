@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/malikimayzar/mcp-gateway/internal/admin"
 	"github.com/malikimayzar/mcp-gateway/internal/circuitbreaker"
 	"github.com/malikimayzar/mcp-gateway/internal/config"
 	"github.com/malikimayzar/mcp-gateway/internal/logging"
@@ -43,7 +44,18 @@ func main() {
 	store.InitWithPool(cfg.PostgresDSN, cfg.PostgresPool.MaxOpenConns, cfg.PostgresPool.MaxIdleConns, cfg.PostgresPool.ConnMaxLifetime, cfg.PostgresPool.ConnMaxIdleTime)
 	defer store.Close()
 
+	// Initialize bounded audit log writer so eval logs are durably queued and
+	// can be drained on shutdown instead of being lost.
+	globalAuditWriter = NewAuditWriter(1000, 4)
+	defer globalAuditWriter.Close()
+
 	reg := newRegistry(cfg)
+
+	// Create a single shared API key store for both public and admin routers.
+	// This ensures tenant IDs are stable across routers and key rotations
+	// affect both auth and admin endpoints.
+	keyStore := newKeyStore(cfg)
+	admin.SetGlobalKeyStore(keyStore)
 
 	// Initialize MCP server
 	mcpServer := mcp.NewServer(mcp.ServerInfo{
@@ -99,22 +111,56 @@ func main() {
 		return
 	}
 
-	// Create HTTP server with graceful shutdown support
-	handler := newRouterWithConfigAndMCP(reg, cfg, mcpServer)
+	// Create public HTTP server with graceful shutdown support
+	handler := newRouterWithConfigAndMCP(reg, cfg, mcpServer, keyStore)
 	srv := &http.Server{
-		Addr:    cfg.ListenAddress,
-		Handler: handler,
+		Addr:              cfg.ListenAddress,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
 	}
 
-	// Start server in goroutine
+	// Create isolated admin server (bound to 127.0.0.1 by default). /admin/*
+	// routes live here and are not reachable from the public network.
+	adminHandler := newAdminRouter(reg, cfg, keyStore)
+	adminSrv := &http.Server{
+		Addr:              cfg.AdminListenAddress,
+		Handler:           adminHandler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	// Start both servers; report startup failures through a shared channel.
+	startErr := make(chan error, 2)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("Server failed to start", logging.Fields{"error": err.Error()})
-			log.Fatal(err)
+			startErr <- err
+		}
+	}()
+	go func() {
+		if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			startErr <- err
 		}
 	}()
 
-	logger.Info("MCP Gateway ready", logging.Fields{"listen_address": cfg.ListenAddress})
+	// Surface any immediate bind errors; otherwise assume servers are ready.
+	select {
+	case err := <-startErr:
+		if err != nil {
+			logger.Error("Server failed to start", logging.Fields{"error": err.Error()})
+			log.Fatal(err)
+		}
+	default:
+	}
+
+	logger.Info("MCP Gateway ready", logging.Fields{
+		"listen_address":     cfg.ListenAddress,
+		"admin_listen_address": cfg.AdminListenAddress,
+	})
 
 	// Wait for shutdown signal
 	quit := make(chan os.Signal, 1)
@@ -123,13 +169,27 @@ func main() {
 
 	logger.Info("Shutdown signal received", logging.Fields{"signal": sig.String()})
 
+	// Drain pending audit/eval log writes before shutting down servers, so no
+	// execution evidence is lost.
+	if globalAuditWriter != nil {
+		globalAuditWriter.Drain()
+	}
+
 	// Graceful shutdown with timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), DefaultShutdownTimeout)
 	defer cancel()
 
+	var shutdownErr error
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		logger.Error("Graceful shutdown failed", logging.Fields{"error": err.Error()})
-		log.Fatal(err)
+		logger.Error("Public server graceful shutdown failed", logging.Fields{"error": err.Error()})
+		shutdownErr = err
+	}
+	if err := adminSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("Admin server graceful shutdown failed", logging.Fields{"error": err.Error()})
+		shutdownErr = err
+	}
+	if shutdownErr != nil {
+		log.Fatal(shutdownErr)
 	}
 
 	// Reset circuit breakers

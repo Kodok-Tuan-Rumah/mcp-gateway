@@ -101,6 +101,7 @@ func TestLoadFromLookup_EmptyEnvironmentYieldsDefaults(t *testing.T) {
 func TestLoadFromLookup_ReadsEveryOverride(t *testing.T) {
 	env := map[string]string{
 		"GATEWAY_LISTEN_ADDRESS":   ":9999",
+		"GATEWAY_PUBLIC_BASE_URL":  "https://audit.example.test/workspace",
 		"POSTGRES_DSN":             "host=db port=5432 user=u password=p dbname=d sslmode=disable",
 		"ARXIV_SERVICE_URL":        "http://arxiv:8080",
 		"EVAL_SERVICE_URL":         "http://eval:8002",
@@ -122,6 +123,9 @@ func TestLoadFromLookup_ReadsEveryOverride(t *testing.T) {
 
 	if cfg.ListenAddress != ":9999" {
 		t.Errorf("ListenAddress: %q", cfg.ListenAddress)
+	}
+	if cfg.PublicBaseURL != "https://audit.example.test/workspace" {
+		t.Errorf("PublicBaseURL: %q", cfg.PublicBaseURL)
 	}
 	if cfg.PostgresDSN != env["POSTGRES_DSN"] {
 		t.Errorf("PostgresDSN: %q", cfg.PostgresDSN)
@@ -240,6 +244,25 @@ func TestLoadFromLookup_RejectsInvalidValues(t *testing.T) {
 		{"bytes negatif", map[string]string{"EVAL_MAX_RESPONSE_BYTES": "-1"}, "EVAL_MAX_RESPONSE_BYTES"},
 		{"bytes bukan angka", map[string]string{"RAG_MAX_RESPONSE_BYTES": "banyak"}, "RAG_MAX_RESPONSE_BYTES"},
 		{"bytes pecahan", map[string]string{"RAG_MAX_RESPONSE_BYTES": "1.5"}, "RAG_MAX_RESPONSE_BYTES"},
+	}
+
+	func TestLoadFromLookup_RejectsUnsafePublicBaseURL(t *testing.T) {
+		for _, value := range []string{
+			"//audit.example.test",
+			"ftp://audit.example.test",
+			"https://user:pass@audit.example.test",
+			"https://audit.example.test?host=attacker.test",
+			"https://audit.example.test?",
+			"https://audit.example.test#fragment",
+			"https://audit.example.test#",
+		} {
+			t.Run(value, func(t *testing.T) {
+				_, err := LoadFromLookup(envMap(map[string]string{"GATEWAY_PUBLIC_BASE_URL": value}))
+				if err == nil || !strings.Contains(err.Error(), "GATEWAY_PUBLIC_BASE_URL") {
+					t.Fatalf("expected GATEWAY_PUBLIC_BASE_URL validation error, got %v", err)
+				}
+			})
+		}
 	}
 
 	for _, tc := range cases {
@@ -451,5 +474,71 @@ func TestLoadFromLookup_RejectsInvalidRateLimitAndAuth(t *testing.T) {
 				t.Fatal("harus gagal, dapat nil")
 			}
 		})
+	}
+}
+
+// GATEWAY_REQUIRE_AUTH=true wajib gagal startup jika GATEWAY_API_KEYS kosong.
+func TestLoadFromLookup_RequireAuthFailsWithoutAPIKeys(t *testing.T) {
+	_, err := LoadFromLookup(envMap(map[string]string{
+		"GATEWAY_REQUIRE_AUTH": "true",
+		"GATEWAY_ADMIN_KEY":    "admin-secret",
+	}))
+	if err == nil {
+		t.Fatal("harus gagal saat GATEWAY_API_KEYS kosong dengan REQUIRE_AUTH=true")
+	}
+	if !strings.Contains(err.Error(), "GATEWAY_API_KEYS") {
+		t.Errorf("pesan harus menyebut GATEWAY_API_KEYS, dapat: %v", err)
+	}
+}
+
+// GATEWAY_REQUIRE_AUTH=true wajib gagal startup jika GATEWAY_ADMIN_KEY kosong.
+func TestLoadFromLookup_RequireAuthFailsWithoutAdminKey(t *testing.T) {
+	_, err := LoadFromLookup(envMap(map[string]string{
+		"GATEWAY_REQUIRE_AUTH": "true",
+		"GATEWAY_API_KEYS":     "key1",
+	}))
+	if err == nil {
+		t.Fatal("harus gagal saat GATEWAY_ADMIN_KEY kosong dengan REQUIRE_AUTH=true")
+	}
+	if !strings.Contains(err.Error(), "GATEWAY_ADMIN_KEY") {
+		t.Errorf("pesan harus menyebut GATEWAY_ADMIN_KEY, dapat: %v", err)
+	}
+}
+
+// GATEWAY_REQUIRE_AUTH=true dengan keduanya di-set harus lulus validasi.
+func TestLoadFromLookup_RequireAuthSucceedsWithKeys(t *testing.T) {
+	cfg, err := LoadFromLookup(envMap(map[string]string{
+		"GATEWAY_REQUIRE_AUTH": "true",
+		"GATEWAY_API_KEYS":     "key1",
+		"GATEWAY_ADMIN_KEY":    "admin-secret",
+	}))
+	if err != nil {
+		t.Fatalf("harus lulus, dapat: %v", err)
+	}
+	if !cfg.Auth.RequireAuth {
+		t.Error("RequireAuth harus true")
+	}
+	if len(cfg.Auth.APIKeys) != 1 {
+		t.Errorf("expected 1 API key, got %d", len(cfg.Auth.APIKeys))
+	}
+	if cfg.Auth.AdminKey != "admin-secret" {
+		t.Errorf("AdminKey: %q", cfg.Auth.AdminKey)
+	}
+}
+
+// GATEWAY_REQUIRE_AUTH=false (default) dengan API keys kosong harus lulus
+// (dev mode: auth disabled).
+func TestLoadFromLookup_RequireAuthFalseAllowsEmptyKeys(t *testing.T) {
+	cfg, err := LoadFromLookup(envMap(map[string]string{
+		"GATEWAY_REQUIRE_AUTH": "false",
+	}))
+	if err != nil {
+		t.Fatalf("dev mode harus lulus, dapat: %v", err)
+	}
+	if cfg.Auth.RequireAuth {
+		t.Error("RequireAuth harus false")
+	}
+	if len(cfg.Auth.APIKeys) != 0 {
+		t.Errorf("expected 0 API keys in dev mode, got %d", len(cfg.Auth.APIKeys))
 	}
 }

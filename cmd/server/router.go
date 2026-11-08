@@ -62,7 +62,13 @@ func promMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(ww, r)
 		duration := time.Since(start).Seconds()
 
-		path := r.URL.Path
+		// Use chi route pattern as label to avoid unbounded cardinality from
+		// raw paths (e.g. /r/{token}, /reports/{id}) and to prevent share
+		// tokens / report IDs leaking into Prometheus labels.
+		path := chi.RouteContext(r.Context()).RoutePattern()
+		if path == "" {
+			path = r.URL.Path
+		}
 		method := r.Method
 		statusStr := strconv.Itoa(ww.Status())
 
@@ -85,11 +91,11 @@ func newRouter(reg *registry.Registry) http.Handler {
 // newRouterWithConfig builds the production router from one startup
 // configuration. newRouter remains a default-config helper for focused tests.
 func newRouterWithConfig(reg *registry.Registry, cfg config.Config) http.Handler {
-	return newRouterWithConfigAndMCP(reg, cfg, nil)
+	return newRouterWithConfigAndMCP(reg, cfg, nil, nil)
 }
 
 // newRouterWithConfigAndMCP builds the router with optional MCP server support
-func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpServer *mcp.Server) http.Handler {
+func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpServer *mcp.Server, keyStore *middleware.APIKeyStore) http.Handler {
 	r := chi.NewRouter()
 
 	// RequestID harus paling awal: middleware dijalankan berurutan, jadi kalau
@@ -105,20 +111,14 @@ func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpSer
 		r.Use(tracing.HTTPMiddleware)
 	}
 
-	// Auth middleware (API key) - uses global key store for runtime rotation
-	keyStore := middleware.NewAPIKeyStore(cfg.Auth.APIKeys)
-	if cfg.Auth.KeyTiers != nil {
-		keyStore = middleware.NewAPIKeyStoreWithTiers(cfg.Auth.APIKeys, cfg.Auth.KeyTiers)
+	// Auth middleware (API key) - uses shared key store for runtime rotation
+	if keyStore == nil {
+		keyStore = newKeyStore(cfg)
 	}
 	admin.SetGlobalKeyStore(keyStore)
-	if len(cfg.Auth.APIKeys) > 0 {
-		r.Use(middleware.AuthWithStore(keyStore, cfg.Auth.HeaderName, cfg.Auth.HeaderPrefix))
-	} else {
-		// Even if no keys configured, use the store (disabled mode)
-		r.Use(middleware.AuthWithStore(keyStore, cfg.Auth.HeaderName, cfg.Auth.HeaderPrefix))
-	}
+	r.Use(middleware.AuthWithStore(keyStore, cfg.Auth.HeaderName, cfg.Auth.HeaderPrefix))
 
-	// Rate limiting middleware
+	// Rate limiting middleware (per-key tier)
 	// Rate limiting middleware (per-key tier)
 	defaultTier := middleware.TierFree
 	if cfg.RateLimit.RequestsPerMinute > 0 {
@@ -128,12 +128,11 @@ func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpSer
 			Burst:             cfg.RateLimit.Burst,
 		}
 	}
-	r.Use(middleware.PerKeyRateLimit(keyStore, defaultTier))
+	trustedProxies := middleware.ParseTrustedProxies(cfg.GatewayTrustedProxies)
+	r.Use(middleware.PerKeyRateLimit(keyStore, defaultTier, cfg.Auth.HeaderName, cfg.Auth.HeaderPrefix, trustedProxies, 5*time.Minute, 10000))
 
 	r.Get("/health", handleHealth(reg))
 	r.Get("/ready", handleReady(cfg))
-	r.Post("/admin/rotate-key", admin.RotateKeyHandler(admin.GlobalKeyStore(), cfg.Auth.AdminKey))
-	r.Get("/admin/key-status", admin.KeyStatusHandler(admin.GlobalKeyStore()))
 	r.Handle("/metrics", promhttp.Handler())
 	r.Post("/tool", handleTool(reg, cfg))
 	r.Post("/plan", handlePlan(reg, cfg))
@@ -146,6 +145,7 @@ func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpSer
 	r.Get("/reports/{id}", handleGetReport)
 	r.Get("/reports/{id}/export.md", handleExportReport)
 	r.Get("/reports/{id}/export.json", handleExportReport)
+	r.Get("/reports/{id}/export.pdf", handleExportReport)
 	r.Get("/r/{token}", handleShareReport)
 	r.Post("/reports/{id}/revoke", handleRevokeReport)
 
@@ -164,6 +164,43 @@ func newRouterWithConfigAndMCP(reg *registry.Registry, cfg config.Config, mcpSer
 	if mcpServer != nil {
 		r.Handle("/mcp", mcp.HandleMCP(mcpServer))
 	}
+
+	return r
+}
+
+// newKeyStore builds the shared API key store from configuration. Extracted so
+// both the public router and the isolated admin router use identical key
+// material and tier assignments.
+func newKeyStore(cfg config.Config) *middleware.APIKeyStore {
+	secret := cfg.InternalServiceToken
+	if secret == "" {
+		secret = cfg.Auth.AdminKey
+	}
+	keyStore := middleware.NewAPIKeyStoreWithSecret(cfg.Auth.APIKeys, secret)
+	if cfg.Auth.KeyTiers != nil {
+		keyStore = middleware.NewAPIKeyStoreWithTiersAndSecret(cfg.Auth.APIKeys, cfg.Auth.KeyTiers, secret)
+	}
+	return keyStore
+}
+
+// newAdminRouter builds the isolated admin router. It only exposes /admin/*
+// endpoints and is intended to be served on a separate listener (e.g.
+// 127.0.0.1:8091) that is not reachable from the public network.
+func newAdminRouter(reg *registry.Registry, cfg config.Config, keyStore *middleware.APIKeyStore) http.Handler {
+	r := chi.NewRouter()
+
+	r.Use(chimiddleware.RequestID)
+	r.Use(chimiddleware.Recoverer)
+	r.Use(chimiddleware.Logger)
+	r.Use(promMiddleware)
+
+	if keyStore == nil {
+		keyStore = newKeyStore(cfg)
+	}
+	admin.SetGlobalKeyStore(keyStore)
+
+	r.Post("/admin/rotate-key", admin.RotateKeyHandler(admin.GlobalKeyStore(), cfg.Auth.AdminKey))
+	r.Get("/admin/key-status", admin.KeyStatusHandler(admin.GlobalKeyStore(), cfg.Auth.AdminKey))
 
 	return r
 }
@@ -374,16 +411,17 @@ func handleBackendRequest(reg *registry.Registry, cfg config.Config) http.Handle
 		auditCtx, auditCancel := context.WithTimeout(context.Background(), cfg.StoreLogTimeout)
 		go func() {
 			defer auditCancel()
-			store.LogAudit(auditCtx, store.AuditLog{
-				RequestID:            resp.RequestID,
-				Backend:              resp.Backend,
-				Claim:                resp.Query,
-				Decision:             resp.Decision,
-				CalibratedConfidence: resp.CalibratedConfidence,
-				CalibratedDecision:   resp.CalibratedDecision,
-				EvidenceJSON:         string(evidenceJSON),
-				SpanJSON:             string(spanJSON),
-			})
+		store.LogAudit(auditCtx, store.AuditLog{
+			RequestID:            resp.RequestID,
+			Backend:              resp.Backend,
+			Claim:                resp.Query,
+			Decision:             resp.Decision,
+			CalibratedConfidence: resp.CalibratedConfidence,
+			CalibratedDecision:   resp.CalibratedDecision,
+			EvidenceJSON:         string(evidenceJSON),
+			SpanJSON:             string(spanJSON),
+			TenantID:             middleware.OrgIDFromContext(req.Context()),
+		})
 		}()
 	}
 }

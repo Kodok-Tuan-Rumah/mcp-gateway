@@ -2,16 +2,46 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Audit Dossier</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scientific Claim Audit</title>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<h1>Audit Dossier</h1>
-<input id="query" placeholder="Enter claim" size="60">
-<button id="run">Audit</button>
-<div id="zone"></div>
-<div id="claims"></div>
-<div id="export"></div>
+<main>
+  <header>
+    <h1>Scientific Claim Audit</h1>
+    <p>Review every claim against its retrieved evidence. An answer without textual evidence is not grounded.</p>
+  </header>
+
+  <section id="private-controls" class="panel" aria-labelledby="input-title">
+    <h2 id="input-title">Create an audit report</h2>
+    <label for="api-key">Gateway API key</label>
+    <input id="api-key" type="password" autocomplete="off" spellcheck="false">
+    <small>The key is used for this page session only and is not stored in the browser.</small>
+    <label for="claims-input">Claims (one per line; your API-key tier limit applies)</label>
+    <textarea id="claims-input" rows="5" placeholder="Paste one claim per line"></textarea>
+    <button id="run" type="button">Create report</button>
+  </section>
+
+  <p id="message" role="status" aria-live="polite"></p>
+  <section id="share-view-note" class="panel" hidden>
+    Read-only shared report. Private exports and share controls are unavailable.
+  </section>
+  <section id="report-meta" class="panel" hidden>
+    <h2>Report</h2>
+    <p id="report-status"></p>
+    <p id="report-id"></p>
+    <p id="report-summary" class="summary"></p>
+    <div id="report-actions" class="actions">
+      <button id="export-md" type="button">Export Markdown</button>
+      <button id="export-json" type="button">Export JSON</button>
+      <button id="export-pdf" type="button">Export PDF</button>
+      <button id="copy-share" type="button" hidden>Copy read-only share link</button>
+      <button id="revoke-share" class="danger" type="button" hidden>Revoke share link</button>
+    </div>
+  </section>
+  <section id="claims" aria-label="Claim and evidence comparison"></section>
+</main>
 <script src="app.js"></script>
 </body>
 </html>
